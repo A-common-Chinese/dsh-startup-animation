@@ -30,10 +30,11 @@ export async function main(input = process.argv.slice(2)) {
     if (action === 'profile') {
       const current = settings();
       if (!rest.length) { console.log(JSON.stringify(current, null, 2)); return; }
-      const values = { username: current.username, badge_id: current.badge_id };
+      const values = {};
+      const keys = { '--name': 'username', '--badge': 'badge_id', '--visual-style': 'visual_style' };
       for (let i = 0; i < rest.length; i += 2) {
-        if (!['--name', '--badge'].includes(rest[i]) || !rest[i + 1]) throw new Error('Usage: dsh-native startup profile [--name NAME] [--badge ID]');
-        values[rest[i] === '--name' ? 'username' : 'badge_id'] = rest[i + 1];
+        if (!Object.hasOwn(keys, rest[i]) || !rest[i + 1]) throw new Error('Usage: dsh-native startup profile [--name NAME] [--badge ID] [--visual-style rhine|laterano]');
+        values[keys[rest[i]]] = rest[i + 1];
       }
       saveSettings(profileInput(values)); console.log('Native startup profile saved.'); return;
     }

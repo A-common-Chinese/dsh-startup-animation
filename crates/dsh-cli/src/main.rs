@@ -443,6 +443,9 @@ enum StartupCmd {
         name: Option<String>,
         #[arg(long)]
         badge: Option<String>,
+        /// Select the shared Rhine Lab or Laterano visual identity
+        #[arg(long)]
+        visual_style: Option<dsh_core::VisualStyle>,
     },
 }
 
@@ -795,13 +798,16 @@ async fn run(cli: Cli) -> Result<()> {
                 Some(StartupCmd::Web { port }) => {
                     return startup_web::serve(workspace, outer_home, roots, port, !cli.silent && config.tui.startup.sound).await;
                 }
-                Some(StartupCmd::Profile { name, badge }) => {
-                    let mut profile = dsh_core::load_startup_profile(&outer_home)?;
-                    let changed = name.is_some() || badge.is_some();
-                    if let Some(name) = name { profile.username = name; }
-                    if let Some(badge) = badge { profile.badge_id = badge; }
-                    if changed { dsh_core::save_startup_profile(&outer_home, &profile)?; }
-                    println!("{}", serde_json::to_string_pretty(&dsh_core::load_startup_profile(&outer_home)?)?);
+                Some(StartupCmd::Profile { name, badge, visual_style }) => {
+                    let changed = name.is_some() || badge.is_some() || visual_style.is_some();
+                    let profile = if changed {
+                        dsh_core::update_startup_profile(&outer_home, |profile| {
+                            if let Some(name) = name { profile.username = name; }
+                            if let Some(badge) = badge { profile.badge_id = badge; }
+                            if let Some(visual_style) = visual_style { profile.visual_style = visual_style; }
+                        })?
+                    } else { dsh_core::load_startup_profile(&outer_home)? };
+                    println!("{}", serde_json::to_string_pretty(&profile)?);
                     return Ok(());
                 }
                 None => (),
@@ -2667,6 +2673,11 @@ mod startup_cli_tests {
         assert!(matches!(cli.command, Some(Commands::Startup { action: Some(StartupCmd::Web { port: 8877 }), .. })));
         let cli = Cli::try_parse_from(["dsh", "startup", "profile", "--name", "CatShark"]).unwrap();
         assert!(matches!(cli.command, Some(Commands::Startup { action: Some(StartupCmd::Profile { name: Some(ref name), .. }), .. }) if name == "CatShark"));
+        for (style, expected) in [("rhine", dsh_core::VisualStyle::Rhine), ("laterano", dsh_core::VisualStyle::Laterano)] {
+            let cli = Cli::try_parse_from(["dsh", "startup", "profile", "--visual-style", style]).unwrap();
+            assert!(matches!(cli.command, Some(Commands::Startup { action: Some(StartupCmd::Profile { visual_style: Some(actual), .. }), .. }) if actual == expected));
+        }
+        assert!(Cli::try_parse_from(["dsh", "startup", "profile", "--visual-style", "unknown"]).is_err());
     }
 
     #[test]

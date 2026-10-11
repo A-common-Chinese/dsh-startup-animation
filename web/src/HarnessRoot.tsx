@@ -6,19 +6,23 @@ import { accessStatus, bootstrap, errorText, isAbort } from "./api";
 import { consumeInitialPlayback } from "./preferences";
 import { consumeLaunchPlayback } from "./launchOverride";
 import { useInterfaceEffects } from "./uiPreferences";
+import { acceptVisualProfile, useVisualStyleEffects } from "./visualStyle";
 import type { AccessStatus, Bootstrap } from "./types";
 import "./access.css";
 
 /** Protected data is never requested or mounted until the service grants access. */
 export function HarnessRoot() {
   useInterfaceEffects();
+  useVisualStyleEffects();
   const [access, setAccess] = useState<AccessStatus>();
   const [boot, setBoot] = useState<Bootstrap>();
   const [play, setPlay] = useState(false);
   const [generation, setGeneration] = useState(0);
   const [error, setError] = useState("");
+  const [profileError, setProfileError] = useState("");
   const [checking, setChecking] = useState(false);
   const active = useRef<AbortController | undefined>(undefined);
+  const profileRead = useRef<AbortController | undefined>(undefined);
   const playbackChosen = useRef(false);
 
   useEffect(() => {
@@ -35,6 +39,7 @@ export function HarnessRoot() {
   }, [access]);
 
   const connect = useCallback(async (choosePlayback = false) => {
+    profileRead.current?.abort();
     active.current?.abort();
     const abort = new AbortController();
     active.current = abort;
@@ -43,6 +48,7 @@ export function HarnessRoot() {
     try {
       const status = await accessStatus(abort.signal);
       if (abort.signal.aborted) return;
+      acceptVisualProfile(status.profile);
       setAccess(status);
       if (choosePlayback && !playbackChosen.current) {
         playbackChosen.current = true;
@@ -55,7 +61,11 @@ export function HarnessRoot() {
         return;
       }
       const data = await bootstrap(abort.signal);
-      if (!abort.signal.aborted) setBoot(data);
+      if (!abort.signal.aborted) {
+        acceptVisualProfile(data.profile);
+        setAccess((previous) => previous && { ...previous, profile: data.profile });
+        setBoot(data);
+      }
     } catch (failure) {
       if (!abort.signal.aborted && !isAbort(failure)) {
         setError(errorText(failure));
@@ -64,6 +74,23 @@ export function HarnessRoot() {
       }
     } finally {
       if (!abort.signal.aborted) setChecking(false);
+    }
+  }, []);
+
+  const refreshProfile = useCallback(async () => {
+    profileRead.current?.abort();
+    const abort = new AbortController();
+    profileRead.current = abort;
+    setProfileError("");
+    try {
+      // A channel-bound message is a refresh hint, never profile authority.
+      const status = await accessStatus(abort.signal);
+      if (abort.signal.aborted) return;
+      acceptVisualProfile(status.profile);
+      setAccess(status);
+      if (!status.unlocked) setBoot(undefined);
+    } catch (failure) {
+      if (!abort.signal.aborted && !isAbort(failure)) setProfileError(errorText(failure));
     }
   }, []);
 
@@ -78,6 +105,7 @@ export function HarnessRoot() {
     window.addEventListener("dsh-access-locked", locked);
     return () => {
       active.current?.abort();
+      profileRead.current?.abort();
       window.removeEventListener("dsh-access-locked", locked);
     };
   }, [connect]);
@@ -87,6 +115,7 @@ export function HarnessRoot() {
       playing={play}
       generation={generation}
       onUnlock={() => void connect()}
+      onProfileChanged={() => void refreshProfile()}
       onFinish={() => {
         setPlay(false);
         if (!boot) void connect();
@@ -95,10 +124,14 @@ export function HarnessRoot() {
       {access && !access.unlocked ? (
         <AccessEntry status={access} onUnlocked={() => connect()} connectionError={error} checking={checking} onRetry={() => connect()} />
       ) : boot ? (
-        <App initialData={boot} onReplay={() => {
+        <><App initialData={boot} latestProfile={access?.profile} onReplay={() => {
           setGeneration((value) => value + 1);
           setPlay(true);
         }} />
+        {profileError && <div className="profile-sync-notice" role="alert">
+          <span>界面资料同步失败：{profileError}</span>
+          <button onClick={() => void refreshProfile()}>重新同步</button>
+        </div>}</>
       ) : (
         <div className="initial-connection" role={error ? "alert" : "status"}>
           <span className="eyebrow">DSH / LOCAL WORKSPACE</span>

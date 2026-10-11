@@ -68,7 +68,9 @@ pub async fn launch(
         workspace.display()
     );
     let config = crate::load_app_config(workspace, config_path)?;
-    let data_directory = config.resolve_outer_home()?.join("desktop/webview");
+    let outer_home = config.resolve_outer_home()?;
+    let visual_style = dsh_core::load_startup_profile(&outer_home)?.visual_style;
+    let data_directory = outer_home.join("desktop/webview");
     let identity = format!(
         "{}|{}",
         workspace.canonicalize()?.display(),
@@ -181,6 +183,7 @@ pub async fn launch(
             .unwrap_or(workspace.as_os_str())
             .to_string_lossy()
             .into_owned(),
+        visual_style,
         smoke_test,
     });
     let was_owned = owned.is_some();

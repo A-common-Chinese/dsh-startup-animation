@@ -66,7 +66,7 @@ pub use settings::{
     PERSONALITIES, PETS, STATUSLINE_FIELDS, THEMES, TITLE_FIELDS,
 };
 pub use startup_control::{set_next_startup, take_next_startup};
-pub use startup_profile::{load_startup_profile, save_startup_profile, StartupProfile};
+pub use startup_profile::{load_startup_profile, save_startup_profile, update_startup_profile, StartupProfile, VisualStyle};
 pub use system_prompt::{SystemPromptBuilder, SECURITY_RESEARCH_PROMPT};
 pub use task::{
     EventStore, JsonlEventStore, TaskStore, TaskStoreSnapshot, TASK_SNAPSHOT_SCHEMA_VERSION,

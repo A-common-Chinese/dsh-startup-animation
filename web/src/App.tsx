@@ -17,7 +17,7 @@ import { SettingsCenter } from "./SettingsCenter";
 import { useUiPreferences, shouldSend } from "./uiPreferences";
 import { unlockNotificationAudio } from "./notifications";
 import { useHarness } from "./useHarness";
-import type { Activity, Bootstrap, SessionEvent } from "./types";
+import type { Activity, Bootstrap, Profile, SessionEvent } from "./types";
 
 const labelSession = (name: string | null, id: string) =>
   name || `会话 ${id.slice(0, 8)}`;
@@ -216,11 +216,13 @@ function Catalog({ data, onClose }: { data: Bootstrap; onClose: () => void }) {
 export function App({
   onReplay,
   initialData,
+  latestProfile,
 }: {
   onReplay: () => void;
   initialData?: Bootstrap;
+  latestProfile?: Profile;
 }) {
-  const harness = useHarness(initialData);
+  const harness = useHarness(initialData, latestProfile);
   const { data, sessions, currentId, snapshot, live } = harness;
   const [draft, setDraft] = useState("");
   const [sidebar, setSidebar] = useState(false);

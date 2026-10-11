@@ -128,11 +128,31 @@ TUI 里常用：
 
 ## DSH 启动动画（可选）
 
-内置原创电影式启动序列：**厂牌唤醒 → 本地连接 → 个人档案 → 技能与插件清单 → 加载结果 → 欢迎进入 DSH**。原创 DELTA CIRCUIT 平面徽章以三角形为主体：左侧 D 字轨、底部 S 折线与右侧 H 连接共同形成轮廓，内部保留小型 DSH 刻字和三层扫描线。分件飞入、高速环扫、平面扫描与档案展开保持扁平风格。高清版没有底部控制栏，按 C 或点右上角省略号打开设置。
+### 两套可切换的视觉风格
+
+设置 → **外观**（或**启动动画**）可选择 **莱茵生命风 UI** / **拉特兰风 UI**，选中后自动保存。独立高清预览按 **C** 打开设置，同样可以切换。风格统一保存在本机 `startup-profile.json` 的 `visual_style` 字段，网页、Rust 桌面端与 CLI 共用；旧资料默认保持莱茵生命风。修改姓名、档案编号或播放开关不会重置风格。
+
+- **莱茵生命风 UI / DELTA CIRCUIT**：保留原有三角 DSH 字轨徽章、黑白实验室档案、橙色标记与机械光阑。
+- **拉特兰风 UI / CONCORD**：原创等半径相交圆、三联尖拱与衬线 DSH 铭文徽章；珠白／冷蓝比例推演、杏仁形交叠、几何门扉、双页档案和斜向幕切组成独立六幕开场，带独立合成钟声音效。设计研究参考 [几何与神学的碰撞](https://www.bilibili.com/video/BV17iGR6nEh9/) 和 [众生行记 UI／交互／动效记录](https://www.bilibili.com/video/BV1WFkwBJEhR/)，未使用游戏素材、原视频或原标志。
+
+两套风格都读取真实身份和本机 Skills／Plugins，使用既有英文阶段旁白，保留密码验证、减少动态效果与任意位置交互。网页标志、浏览器页签图标、Rust 桌面窗口／任务栏图标随选择更新；终端下次启动读取相同选择，仅显示资料，不增加密码输入。Windows 固定快捷方式文件保留通用 DSH 图标。
+
+```bash
+dsh startup profile --visual-style laterano  # 拉特兰风；重启终端后生效
+dsh startup profile --visual-style rhine     # 切回莱茵生命风
+dsh app --startup                           # Rust 桌面端
+dsh web --startup                           # 网页端
+```
+
+独立预览的 `?style=laterano` 可在未连接本地服务时演示新风格；连接后以真实保存的资料为准。原创轮廓分别位于 `docs/startup-emblem.js` 和 `docs/startup-laterano-emblem.js`，运行 `node scripts/export_startup_emblem.cjs`、`python scripts/export_desktop_icon.py` 可重新生成匹配的 SVG、终端轮廓与 Windows 图标。
+
+### 演出与交互
+
+内置原创电影式启动序列：**厂牌唤醒 → 本地连接 → 个人档案 → 技能与插件清单 → 加载结果 → 欢迎进入 DSH**。莱茵版原创 DELTA CIRCUIT 平面徽章以三角形为主体：左侧 D 字轨、底部 S 折线与右侧 H 连接共同形成轮廓，内部保留小型 DSH 刻字和三层扫描线。分件飞入、高速环扫、平面扫描与档案展开保持扁平风格。高清版没有底部控制栏，按 C 或点右上角省略号打开设置。
 
 这一版以 [RhineLabUI](https://github.com/LBEILC/RhineLabUI) 的档案解密和扫描节奏为视觉研究参考，重新编排原创的三层徽章刻度环、错拍锁块、六瓣平面光阑、校准导轨、斜线版纹与三组斜切转场。外围能力分支由实际返回的 Skills／Plugins 生成，只有读取中才出现流动载波。启动画面中的标题、字标、提示、字幕、档案与真实清单统一使用固定文字单元内的滚动、逐字显现、乱码锁定和遮挡条撤回；参考源码与时间采样实现见 [`docs/startup-text.js`](docs/startup-text.js)。徽章轮廓共用同一个中心和缩放，橙色角标直接跟随实际卡片边框，外围装饰避让实际身份卡，适配窗口尺寸与缩放。中文采用随包提供的工业排版与 Noto Sans SC 字体子集，字体及许可证位于 [`docs/assets/fonts`](docs/assets/fonts)。动画没有复用参考项目的图形或采样音频，支持减少动态效果设置。
 
-动画**默认关闭**。启用后在开场、个人档案、加载结果三个节点等待确认；等待时旋转环和扫描仍持续运动。确认后连续播放两幕，再到下一节点；终端最后自动进入对话，`dsh web` 的嵌入动画完成或跳过后进入真实 Harness，`dsh startup web` 独立预览停留在欢迎画面。基础演出为 **13.8 秒**；交互等待、真实读取和较长旁白会延长停留时间，不截断声音。终端独立预览可用 `--auto` 完整自动播放。
+动画**默认关闭**。启用后在开场、个人档案、加载结果三个节点等待确认；莱茵版等待时保持环扫，拉特兰版构造完成后静止停留，仅实际加载期间显示流动指示。确认后连续播放两幕，再到下一节点；终端最后自动进入对话，`dsh web` 的嵌入动画完成或跳过后进入真实 Harness，`dsh startup web` 独立预览停留在欢迎画面。莱茵版基础演出为 **13.8 秒**，拉特兰高清版为 **20.4 秒**；交互等待、真实读取和较长旁白会延长停留时间，不截断声音。终端独立预览可用 `--auto` 完整自动播放。
 
 编排参考 [dsh-startup-screen 的序列与确认机制](https://github.com/6shenhonghong9/dsh-startup-screen/blob/main/lib/splash.js)。本项目的字徽、图形部件及电子音效自行绘制和合成。旁白使用预先生成的固定英文录音，统一称呼 **OPERATOR**，只说明实际阶段，不念自定义用户名、变化的数量或逐项技能／插件名。动画等待每句播完；失败与部分失败使用独立的提示录音。运行时不调用系统 TTS，也无需加载语音模型。音频无法播放时仍保留画面和电子音效。
 
@@ -182,6 +202,7 @@ cd deepseek-harness-rust-optimize
 python scripts/install_native_startup.py
 
 dsh-native startup profile --name CatShark
+dsh-native startup profile --visual-style laterano
 dsh-native web --startup
 ```
 

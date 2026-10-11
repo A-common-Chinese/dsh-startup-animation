@@ -1,9 +1,10 @@
 //! Same-origin loopback hosts for the startup preview and the actual Harness runtime.
 use anyhow::{bail, Context, Result};
 use dsh_core::{
-    load_startup_profile, save_startup_profile, set_next_startup, EventStore, Runtime,
-    StartupProfile,
+    load_startup_profile, set_next_startup, EventStore, Runtime,
 };
+#[cfg(test)]
+use dsh_core::{save_startup_profile, StartupProfile};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
@@ -391,6 +392,18 @@ fn asset(path: &str) -> Option<(&'static str, &'static str)> {
             "text/javascript; charset=utf-8",
             include_str!("../../../docs/startup-emblem.js"),
         )),
+        "/startup-laterano-emblem.js" => Some((
+            "text/javascript; charset=utf-8",
+            include_str!("../../../docs/startup-laterano-emblem.js"),
+        )),
+        "/startup-laterano.js" => Some((
+            "text/javascript; charset=utf-8",
+            include_str!("../../../docs/startup-laterano.js"),
+        )),
+        "/startup-laterano.css" => Some((
+            "text/css; charset=utf-8",
+            include_str!("../../../docs/startup-laterano.css"),
+        )),
         "/startup-visuals.js" => Some((
             "text/javascript; charset=utf-8",
             include_str!("../../../docs/startup-visuals.js"),
@@ -735,12 +748,23 @@ async fn handle(mut socket: TcpStream, host: Arc<Host>) -> Result<()> {
             }
         }
         ("GET", "/api/profile") => match load_startup_profile(&host.outer_home) {
-            Ok(profile) => json_response(&mut socket, 200, json!({"username":profile.username,"badge_id":profile.badge_id,"token":host.token,"workspace":host.workspace,"mode":"local","sound":host.sound,"inventory_mode":if host.runtime.is_some() {"mounted"} else {"discover"}})).await,
+            Ok(profile) => json_response(&mut socket, 200, json!({"username":profile.username,"badge_id":profile.badge_id,"visual_style":profile.visual_style,"token":host.token,"workspace":host.workspace,"mode":"local","sound":host.sound,"inventory_mode":if host.runtime.is_some() {"mounted"} else {"discover"}})).await,
             Err(e) => json_response(&mut socket, 503, json!({"error":e.to_string()})).await,
         },
         ("POST", "/api/profile") => {
-            let result = serde_json::from_slice::<StartupProfile>(&request.body).map_err(anyhow::Error::from)
-                .and_then(|profile| { save_startup_profile(&host.outer_home, &profile)?; load_startup_profile(&host.outer_home) });
+            let result = serde_json::from_slice::<Value>(&request.body).map_err(anyhow::Error::from)
+                .and_then(|value| {
+                    let fields = value.as_object().context("startup profile must be an object")?;
+                    // Validate only supplied fields, including rejecting explicit null.
+                    let username = fields.get("username").cloned().map(serde_json::from_value::<String>).transpose()?;
+                    let badge = fields.get("badge_id").cloned().map(serde_json::from_value::<String>).transpose()?;
+                    let visual_style = fields.get("visual_style").cloned().map(serde_json::from_value::<dsh_core::VisualStyle>).transpose()?;
+                    dsh_core::update_startup_profile(&host.outer_home, |profile| {
+                        if let Some(username) = username { profile.username = username; }
+                        if let Some(badge) = badge { profile.badge_id = badge; }
+                        if let Some(visual_style) = visual_style { profile.visual_style = visual_style; }
+                    })
+                });
             match result {
                 Ok(profile) => json_response(&mut socket, 200, serde_json::to_value(profile)?).await,
                 Err(e) => json_response(&mut socket, 400, json!({"error":e.to_string()})).await,
@@ -1040,10 +1064,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn profile_style_updates_preserve_identity_and_legacy_edits_preserve_style() {
+        let server = harness(None).await;
+        let host = &server.host;
+        let (status, initial) = http(host, "GET", "/api/profile", Value::Null, false).await;
+        assert_eq!(status, 200);
+        assert_eq!(initial["visual_style"], "rhine");
+        let (status, _) = http(host, "POST", "/api/profile", json!({"username":"Operator","badge_id":"DSH-STYLE"}), true).await;
+        assert_eq!(status, 200);
+        let (status, styled) = http(host, "POST", "/api/profile", json!({"visual_style":"laterano"}), true).await;
+        assert_eq!(status, 200);
+        assert_eq!(styled["username"], "Operator");
+        assert_eq!(styled["badge_id"], "DSH-STYLE");
+        assert_eq!(styled["visual_style"], "laterano");
+        let (status, legacy) = http(host, "POST", "/api/profile", json!({"username":"Renamed operator"}), true).await;
+        assert_eq!(status, 200);
+        assert_eq!(legacy["visual_style"], "laterano");
+        assert_eq!(legacy["badge_id"], "DSH-STYLE");
+        for invalid in [json!({"visual_style":"unknown"}), json!({"visual_style":null}), json!({"visual_style":42}), json!({"username":null}), json!({"badge_id":""})] {
+            assert_eq!(http(host, "POST", "/api/profile", invalid, true).await.0, 400);
+            assert_eq!(serde_json::to_value(load_startup_profile(&host.outer_home).unwrap()).unwrap(), legacy);
+        }
+        let (status, bootstrap) = http(host, "GET", "/api/harness/bootstrap", Value::Null, false).await;
+        assert_eq!(status, 200);
+        assert_eq!(bootstrap["profile"]["visual_style"], "laterano");
+        let (_, access) = http(host, "GET", "/api/access", Value::Null, false).await;
+        assert_eq!(access["profile"]["visual_style"], "laterano");
+        assert_eq!(http(host, "GET", "/api/profile", Value::Null, false).await.1["visual_style"], "laterano");
+        for path in ["/startup-laterano-emblem.js", "/startup-laterano.js", "/startup-laterano.css"] {
+            assert!(asset(path).is_some(), "{path}");
+        }
+    }
+
+    #[tokio::test]
     async fn real_access_gate_persists_verifies_rotates_locks_and_removes_password() {
         let server = harness(None).await;
         let host = &server.host;
-        save_startup_profile(&host.outer_home, &StartupProfile { username: "Operator fixture".into(), badge_id: "DSH-TEST".into() }).unwrap();
+        save_startup_profile(&host.outer_home, &StartupProfile { username: "Operator fixture".into(), badge_id: "DSH-TEST".into(), ..StartupProfile::default() }).unwrap();
         set_next_startup(&host.outer_home, true).unwrap();
         let (status, access, _) = access_http(host, "GET", "/api/access", Value::Null, None).await;
         assert_eq!(status, 200);

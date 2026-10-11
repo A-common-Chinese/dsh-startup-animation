@@ -2,7 +2,7 @@ import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useHarness } from "./useHarness";
 import * as api from "./api";
-import type { Bootstrap, EventBatch, SessionResult } from "./types";
+import type { Bootstrap, EventBatch, Profile, SessionResult } from "./types";
 
 vi.mock("./api", async (original) => ({
   ...(await original<typeof import("./api")>()),
@@ -48,6 +48,41 @@ const snapshot = {
   state: null,
 };
 describe("Harness request lifecycle", () => {
+  it("keeps the fresh bootstrap profile after a service restart instead of restoring an older parent snapshot", async () => {
+    const refreshed: Bootstrap = { ...data, token: "restarted-service", profile: { username: "Current operator", badge_id: "DSH-03", visual_style: "laterano" } };
+    vi.mocked(api.bootstrap).mockResolvedValue(refreshed);
+    vi.mocked(api.rpc).mockImplementation(async (_token, method) => {
+      if (method === "sessions/get") return snapshot;
+      if (method === "approvals/list") return { approvals: [] };
+      if (method === "events/wait") return new Promise(() => {});
+      throw new Error(method);
+    });
+    const { result } = renderHook(() => useHarness(data, data.profile));
+    await waitFor(() => expect(result.current.snapshot).toBeTruthy());
+    act(() => result.current.reconnect());
+    await waitFor(() => expect(result.current.data?.token).toBe("restarted-service"));
+    expect(result.current.data?.profile).toEqual(refreshed.profile);
+    expect(api.bootstrap).toHaveBeenCalledOnce();
+  });
+  it("updates a verified external profile without restarting event polling or replacing the selected session", async () => {
+    vi.mocked(api.rpc).mockImplementation(async (_token, method) => {
+      if (method === "sessions/get") return snapshot;
+      if (method === "approvals/list") return { approvals: [] };
+      if (method === "events/wait") return new Promise(() => {});
+      throw new Error(method);
+    });
+    const { result, rerender } = renderHook(({ profile }: { profile: Profile }) => useHarness(data, profile), { initialProps: { profile: data.profile } });
+    await waitFor(() => expect(result.current.snapshot).toBeTruthy());
+    const selected = result.current.snapshot;
+    const initialCalls = vi.mocked(api.rpc).mock.calls.length;
+    rerender({ profile: { username: "Updated operator", badge_id: "DSH-02", visual_style: "laterano" } });
+    await waitFor(() => expect(result.current.data?.profile.visual_style).toBe("laterano"));
+    expect(result.current.data?.profile.username).toBe("Updated operator");
+    expect(result.current.snapshot).toBe(selected);
+    expect(result.current.currentId).toBe("s1");
+    expect(vi.mocked(api.rpc).mock.calls).toHaveLength(initialCalls);
+    expect(api.bootstrap).not.toHaveBeenCalled();
+  });
   it("does not let an older selection snapshot replace completion or erase a newer turn", async () => {
     let finishInitial!: (value: SessionResult) => void;
     let deliverEvents!: (value: EventBatch) => void;

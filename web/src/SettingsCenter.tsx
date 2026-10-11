@@ -42,6 +42,8 @@ import { ExtensionSettings } from "./ExtensionSettings";
 import { WorkspaceSettings } from "./WorkspaceSettings";
 import { AccessPasswordSettings } from "./AccessPasswordSettings";
 import { ComputerSettings } from "./ComputerSettings";
+import { VisualStyleChoices } from "./VisualStyleChoices";
+import { acceptVisualProfile, saveVisualStyle } from "./visualStyle";
 import {
   readPreferences,
   savePreferences,
@@ -53,7 +55,7 @@ import {
   type UiPreferences,
 } from "./uiPreferences";
 import type { useHarness } from "./useHarness";
-import type { Profile, SessionSummary } from "./types";
+import type { Profile, SessionSummary, VisualStyle } from "./types";
 import "./settings-center.css";
 
 type Characteristic = "default" | "more" | "less";
@@ -143,7 +145,7 @@ const categories: Category[] = [
     label: "外观",
     english: "Appearance",
     icon: SunIcon,
-    keywords: "主题 深色 浅色 颜色 字号 密度 动画",
+    keywords: "主题 深色 浅色 颜色 字号 密度 动画 风格 莱茵生命 拉特兰 logo 图标",
   },
   {
     id: "notifications",
@@ -455,6 +457,8 @@ export function SettingsCenter({
   const blocked = !!busy || loading || !data;
   const archived = allSessions.filter((session) => session.archived);
 
+  useEffect(() => { if (data) acceptVisualProfile(data.profile); }, [data?.profile]);
+
   useEffect(() => {
     const serial = ++generation.current;
     if (!open) {
@@ -577,6 +581,16 @@ export function SettingsCenter({
       );
     });
   }
+  async function changeVisualStyle(style: VisualStyle) {
+    if (!data) return;
+    await perform("保存界面风格", async (isCurrent) => {
+      const profile = await saveVisualStyle(data.token, style);
+      if (!isCurrent()) return;
+      setData((previous) => previous && { ...previous, profile });
+      acceptVisualProfile(profile);
+    });
+  }
+  const styleChoices = () => <VisualStyleChoices disabled={blocked} saving={busy === "保存界面风格"} onChange={(style) => void changeVisualStyle(style)} />;
   async function reloadLists(isCurrent: () => boolean) {
     if (!data) return;
     const [sessions, memory, settings] = await Promise.all([
@@ -925,6 +939,7 @@ export function SettingsCenter({
       case "appearance":
         return (
           <>
+            {styleChoices()}
             <Section>
               <Row title="主题">
                 <Select
@@ -1108,6 +1123,7 @@ export function SettingsCenter({
                 );
                 if (!isCurrent()) return;
                 setData((previous) => previous && { ...previous, profile });
+                acceptVisualProfile(profile);
                 setUsername(profile.username);
                 setBadge(profile.badge_id);
               });
@@ -1851,6 +1867,7 @@ export function SettingsCenter({
       case "startup":
         return (
           <>
+            {styleChoices()}
             <Section title="网页启动动画">
               <Row
                 title="每次打开网页时播放"

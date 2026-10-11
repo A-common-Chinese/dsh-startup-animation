@@ -14,6 +14,7 @@ pub struct DesktopOptions {
     pub url: String,
     pub data_directory: PathBuf,
     pub workspace_label: String,
+    pub visual_style: dsh_core::VisualStyle,
     /// Diagnostic mode opens a real window, waits for a real page load, then exits.
     pub smoke_test: bool,
 }
@@ -134,6 +135,28 @@ fn same_origin(input: &str, origin: &str) -> bool {
     Url::parse(input).is_ok_and(|url| url.origin().ascii_serialization() == origin)
 }
 
+#[cfg(any(windows, test))]
+fn visual_style_message(input: &str, request_url: &str, origin: &str) -> Option<dsh_core::VisualStyle> {
+    if !same_origin(request_url, origin) {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(input).ok()?;
+    let fields = value.as_object()?;
+    if fields.len() != 2 || fields.get("event")?.as_str()? != "dsh-visual-style" {
+        return None;
+    }
+    serde_json::from_value(fields.get("visual_style")?.clone()).ok()
+}
+
+#[cfg(windows)]
+fn window_icon(style: dsh_core::VisualStyle) -> Option<tao::window::Icon> {
+    let rgba: &[u8] = match style {
+        dsh_core::VisualStyle::Rhine => include_bytes!("../assets/icon.rgba"),
+        dsh_core::VisualStyle::Laterano => include_bytes!("../assets/icon-laterano.rgba"),
+    };
+    tao::window::Icon::from_rgba(rgba.to_vec(), 128, 128).ok()
+}
+
 #[cfg(windows)]
 pub fn run(options: DesktopOptions) -> Result<DesktopOutcome> {
     use std::{cell::Cell, rc::Rc, time::Instant};
@@ -142,8 +165,8 @@ pub fn run(options: DesktopOptions) -> Result<DesktopOutcome> {
         event::{Event, WindowEvent},
         event_loop::{ControlFlow, EventLoop},
         platform::run_return::EventLoopExtRunReturn,
-        platform::windows::WindowBuilderExtWindows,
-        window::{Icon, WindowBuilder},
+        platform::windows::{WindowBuilderExtWindows, WindowExtWindows},
+        window::WindowBuilder,
     };
     use wry::{NewWindowResponse, PageLoadEvent, WebContext, WebViewBuilder};
 
@@ -155,22 +178,22 @@ pub fn run(options: DesktopOptions) -> Result<DesktopOutcome> {
         let size = monitor.size().to_logical::<f64>(monitor.scale_factor());
         LogicalSize::new((size.width * 0.85).min(1360.0), (size.height * 0.80).min(900.0))
     }).unwrap_or_else(|| LogicalSize::new(1100.0, 720.0));
-    let window = WindowBuilder::new()
+    let window = Rc::new(WindowBuilder::new()
         .with_window_classname(format!("DSH.Harness.{}", options.instance_key))
         .with_title(format!("DSH Harness · {}", options.workspace_label))
-        .with_window_icon(
-            Icon::from_rgba(include_bytes!("../assets/icon.rgba").to_vec(), 128, 128).ok(),
-        )
+        .with_window_icon(window_icon(options.visual_style))
+        .with_taskbar_icon(window_icon(options.visual_style))
         .with_inner_size(size)
         .with_min_inner_size(LogicalSize::new(720.0, 480.0))
         .with_maximized(true)
         .build(&event_loop)
-        .context("create DSH desktop window")?;
+        .context("create DSH desktop window")?);
     let loaded = Rc::new(Cell::new(None));
     let loaded_callback = loaded.clone();
     let ready = Rc::new(Cell::new(None));
     let ready_callback = ready.clone();
     let ipc_origin = origin.clone();
+    let icon_window = window.clone();
     let page_origin = origin.clone();
     let mut context = WebContext::new(Some(options.data_directory));
     if options.smoke_test { eprintln!("Desktop check: create WebView2"); }
@@ -183,12 +206,16 @@ pub fn run(options: DesktopOptions) -> Result<DesktopOutcome> {
             "Object.defineProperty(window, '__DSH_DESKTOP__', {value: true});",
         )
         .with_ipc_handler(move |request| {
-            // A readiness notification is the entire native IPC surface; it
-            // neither accepts commands nor returns credentials to JavaScript.
+            // Native IPC only accepts readiness and two bundled icon choices.
+            // It never accepts paths, commands, or untrusted image data.
             if same_origin(&request.uri().to_string(), &ipc_origin)
                 && request.body() == "{\"event\":\"dsh-ready\",\"version\":1}"
             {
                 ready_callback.set(Some(Instant::now()));
+            }
+            if let Some(style) = visual_style_message(request.body(), &request.uri().to_string(), &ipc_origin) {
+                icon_window.set_window_icon(window_icon(style));
+                icon_window.set_taskbar_icon(window_icon(style));
             }
         })
         .with_navigation_handler(move |url| {
@@ -207,7 +234,7 @@ pub fn run(options: DesktopOptions) -> Result<DesktopOutcome> {
                 loaded_callback.set(Some(Instant::now()));
             }
         })
-        .build(&window)
+        .build(window.as_ref())
         .context("create WebView2; install Microsoft Edge WebView2 Runtime if it is missing")?;
 
     if options.smoke_test { eprintln!("Desktop check: run native event loop"); }
@@ -366,5 +393,28 @@ mod tests {
             assert!(local_origin(url).is_err());
         }
         assert!(!same_origin("http://127.0.0.1:8771/", &origin));
+    }
+
+    #[test]
+    fn native_visual_style_ipc_is_same_origin_and_limited_to_bundled_choices() {
+        let origin = "http://127.0.0.1:8770";
+        let url = "http://127.0.0.1:8770/settings";
+        for (name, expected) in [("rhine", dsh_core::VisualStyle::Rhine), ("laterano", dsh_core::VisualStyle::Laterano)] {
+            let message = serde_json::json!({"event":"dsh-visual-style","visual_style":name}).to_string();
+            assert_eq!(visual_style_message(&message, url, origin), Some(expected));
+            assert_eq!(visual_style_message(&message, "http://127.0.0.1:8771/", origin), None);
+            assert_eq!(visual_style_message(&message, "https://example.com/", origin), None);
+        }
+        for message in [
+            r#"{"event":"dsh-visual-style","visual_style":"unknown"}"#,
+            r#"{"event":"dsh-visual-style","visual_style":null}"#,
+            r#"{"event":"dsh-visual-style","visual_style":"laterano","path":"arbitrary.ico"}"#,
+            r#"{"event":"different","visual_style":"laterano"}"#,
+            r#"{"event":"dsh-visual-style"}"#,
+            "[]",
+            "invalid JSON",
+        ] {
+            assert_eq!(visual_style_message(message, url, origin), None, "{message}");
+        }
     }
 }

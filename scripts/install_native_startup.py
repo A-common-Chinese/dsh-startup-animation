@@ -25,11 +25,12 @@ def stage_package(destination: Path) -> None:
     assets = destination / "assets"
     assets.mkdir()
     for path in (ROOT / "docs").glob("startup-*"):
-        if path.suffix in (".html", ".js"):
+        if path.suffix in (".html", ".js", ".css"):
             shutil.copy2(path, assets / path.name)
     for name in ("voice", "fonts", "licenses"):
         shutil.copytree(ROOT / "docs" / "assets" / name, assets / "assets" / name)
     shutil.copy2(ROOT / "docs" / "assets" / "dsh-emblem.svg", assets / "assets" / "dsh-emblem.svg")
+    shutil.copy2(ROOT / "docs" / "assets" / "dsh-laterano-emblem.svg", assets / "assets" / "dsh-laterano-emblem.svg")
 
 
 def main() -> None:

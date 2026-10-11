@@ -159,6 +159,7 @@ function createHarness(options = {}) {
     matchMedia: () => ({ matches: !!options.reducedMotion, addEventListener() {} }),
     ResizeObserver: class { observe() {} },
     DSHVisuals: { draw(_ctx, _width, _height, state) { drawStates.push({ ...state }); } },
+    DSHLateranoVisuals: { draw(_ctx, _width, _height, state) { drawStates.push({ ...state, visualStyle: 'laterano' }); } },
     DSHVoice: options.voice,
     requestAnimationFrame(callback) { const id = ++nextFrame; frames.set(id, callback); return id; },
     cancelAnimationFrame(id) { frames.delete(id); },
@@ -659,7 +660,33 @@ async function main() {
   assert.equal(invalidUnlock.element('accessEntry').hidden,false,'malformed success responses cannot release the password gate');
   assert.match(invalidUnlock.element('accessMessage').textContent,/无效资料/);
   assert.equal(invalidUnlock.requests.filter(item=>item.url==='/api/profile').length,0);
-  console.log('PASS: startup lifecycle, real inventory, voice, access-password barriers and verified embedded handshake.');
+  let themeProfile={...profileFixture,visual_style:'laterano'},themeFails=false;
+  const themeFetch=async(url,init={})=>{
+    if(url==='/api/profile'&&init.method==='POST'){
+      if(themeFails)return jsonResponse({message:'Theme disk failure'},500);
+      themeProfile={...themeProfile,...JSON.parse(init.body)};
+    }
+    return jsonResponse(themeProfile);
+  };
+  const themed=createHarness({fetch:themeFetch,embedded:true,search:embedSearch});await settle();
+  assert.equal(themed.document.documentElement.dataset.visualStyle,'laterano');
+  assert.equal(themed.drawStates.at(-1).visualStyle,'laterano','saved style must select the actual second renderer');
+  assert.equal(themed.element('seek').max,'20.4');
+  themed.element('visualStyle').value='rhine';themed.element('visualStyle').emit('change');await settle();
+  assert.deepEqual(JSON.parse(themed.requests.findLast(item=>item.method==='POST').body),{visual_style:'rhine'},'appearance must not overwrite identity');
+  assert.equal(themeProfile.username,profileFixture.username);
+  assert.equal(themed.document.documentElement.dataset.visualStyle,'rhine');
+  assert.equal(themed.messages.filter(item=>item.message.type==='profile-changed').length,1,'a successful iframe save must notify its verified parent');
+  const themeReload=createHarness({fetch:themeFetch});await settle();
+  assert.equal(themeReload.document.documentElement.dataset.visualStyle,'rhine');
+  themeFails=true;themed.element('visualStyle').value='laterano';themed.element('visualStyle').emit('change');await settle();
+  assert.equal(themed.document.documentElement.dataset.visualStyle,'rhine','a failed style save restores the saved appearance');
+  assert.match(themed.element('styleStatus').textContent,/Theme disk failure/);
+  assert.equal(themed.messages.filter(item=>item.message.type==='profile-changed').length,1,'failed writes must not announce a changed profile');
+  const lockedTheme=createHarness({accessFetch:async()=>jsonResponse({...accessStatus(),unlocked:false,profile:{...accessStatus().profile,visual_style:'laterano'}})});await settle();
+  assert.equal(lockedTheme.document.documentElement.dataset.visualStyle,'laterano','the password gate must already use the saved style');
+  assert.equal(lockedTheme.requests.filter(item=>item.url==='/api/profile').length,0);
+  console.log('PASS: startup lifecycle, real inventory, voice, access barriers, persisted styles, failed saves and verified embedded handshake.');
 }
 
 main().catch(error => { console.error(error); process.exitCode = 1; });

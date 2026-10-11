@@ -7,6 +7,7 @@ type Props = {
   startupUrl?: string;
   onFinish?: (reason: FinishReason) => void;
   onUnlock?: () => void;
+  onProfileChanged?: () => void;
   readyTimeoutMs?: number;
 };
 type Frame = { url: string; origin: string; channel: string };
@@ -18,6 +19,7 @@ export function StartupGate({
   startupUrl = "http://127.0.0.1:8769/startup-preview.html",
   onFinish,
   onUnlock,
+  onProfileChanged,
   readyTimeoutMs = 12000,
 }: Props) {
   const iframe = useRef<HTMLIFrameElement>(null);
@@ -25,6 +27,8 @@ export function StartupGate({
   callback.current = onFinish;
   const unlockCallback = useRef(onUnlock);
   unlockCallback.current = onUnlock;
+  const profileCallback = useRef(onProfileChanged);
+  profileCallback.current = onProfileChanged;
   const finished = useRef(false);
   const [done, setDone] = useState(false);
   const [frame, setFrame] = useState<Frame>();
@@ -70,6 +74,10 @@ export function StartupGate({
         if (data.type === "complete" || data.type === "skip")
           complete(data.type);
         if (data.type === "unlocked") unlockCallback.current?.();
+        // This notification contains no trusted profile fields. Only the
+        // same-origin embedded film may request a fresh server profile read.
+        if (data.type === "profile-changed" && event.origin === window.location.origin)
+          profileCallback.current?.();
       };
       window.addEventListener("message", receive);
       timeout = setTimeout(() => {

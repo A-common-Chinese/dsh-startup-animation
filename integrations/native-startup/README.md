@@ -9,6 +9,10 @@ does not patch installed DSH source or replace the `dsh` executable.
 
 The package includes the original animation, fixed English voice assets and
 the licensed Chinese font subset. Node.js `^22.19.0 || >=24.0.0` is required.
+The opening settings (C) switch between 莱茵生命风 UI (`rhine`) and
+拉特兰风 UI (`laterano`). Both original emblems and films ship together.
+The choice is saved with the native startup profile; name-only updates preserve it.
+Use `dsh-native startup profile --visual-style rhine` to restore the original.
 No Rust, Python (after packaging), browser extension, model key or TTS runtime
 is needed to play the animation. Official DSH's own model configuration is
 needed for conversations, as usual.
@@ -20,6 +24,7 @@ pinned official CLI. Its independent command is `dsh-native`:
 ```sh
 dsh-native web --startup
 dsh-native startup profile --name CatShark
+dsh-native startup profile --visual-style laterano
 dsh-native startup enabled on
 dsh-native startup next off
 dsh-native web

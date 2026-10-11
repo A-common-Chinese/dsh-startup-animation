@@ -1,0 +1,24 @@
+/* CONCORD / Laterano: pearl paper, blue construction lines, black cutwork. */
+.visual-style-setting{display:grid;gap:9px;margin:17px 0;padding:14px 0;border-block:1px solid var(--line);font-size:11px}
+.visual-style-setting label{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.visual-style-setting select{max-width:220px;padding:9px;color:var(--ink);background:var(--bg);border:1px solid var(--line)}
+.visual-style-setting p{margin:0;color:var(--soft);font-size:10px;line-height:1.6}
+:root[data-visual-style=laterano]{--ink:#101b2e;--soft:#596f96;--accent:#2362d5;--line:#b4c6e1;--panel:#f8fafdf7;--bg:#f1f5fb}
+:root[data-visual-style=laterano][data-theme=dark]{--ink:#eef4ff;--soft:#a0b4d6;--accent:#8bb8ff;--line:#3b5278;--panel:#101c32f7;--bg:#0e182a}
+:root[data-visual-style=laterano] body.on-black{--ink:#101b2e;--soft:#596f96;--accent:#2362d5;--line:#b4c6e1;--panel:#f8fafdf7}
+:root[data-visual-style=laterano][data-theme=dark] body.on-black{--ink:#eef4ff;--soft:#a0b4d6;--accent:#8bb8ff;--line:#3b5278;--panel:#101c32f7}
+[data-visual-style=laterano] .vignette{box-shadow:none}
+[data-visual-style=laterano] h1{font-family:"Noto Serif SC","Source Han Serif SC","SimSun","Songti SC",serif;font-weight:400;letter-spacing:.22em;text-indent:.22em}
+[data-visual-style=laterano] .phase-kicker{color:var(--accent);letter-spacing:.3em}
+[data-visual-style=laterano] .phase-note{font-weight:400;letter-spacing:.17em}
+[data-visual-style=laterano] .brand b{font-family:Georgia,"Times New Roman",serif;font-weight:400;letter-spacing:2px;font-size:31px}
+[data-visual-style=laterano] .brand-bottom em{background:var(--accent);color:var(--bg)}
+[data-visual-style=laterano] .identity-card{border-top:1px solid var(--accent);background:var(--panel)}
+[data-visual-style=laterano] .identity-card .identity-label{font-family:"SimSun","Songti SC",serif;font-weight:400;letter-spacing:.22em}
+[data-visual-style=laterano] .identity-card:before,[data-visual-style=laterano] .identity-card:after{content:"";position:absolute;width:7px;height:7px;border:1px solid var(--accent);background:var(--bg);pointer-events:none;transform:translate(-50%,-50%) rotate(45deg)}
+[data-visual-style=laterano] .identity-card:before{left:0;top:0}
+[data-visual-style=laterano] .identity-card:after{left:100%;top:100%}
+[data-visual-style=laterano] .inventory-column{border-top:1px solid var(--accent)}
+[data-visual-style=laterano] .inventory-heading b{font-family:Georgia,"Times New Roman",serif;font-weight:400;letter-spacing:.14em}
+[data-visual-style=laterano] .control-panel{box-shadow:12px 12px 0 #2362d511;border-color:var(--accent)}
+@media(max-width:600px){[data-visual-style=laterano] h1{letter-spacing:.12em;text-indent:.12em}[data-visual-style=laterano] .phase-kicker{letter-spacing:.15em}}

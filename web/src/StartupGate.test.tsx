@@ -33,6 +33,25 @@ function send(
   );
 }
 describe("StartupGate", () => {
+  it("accepts profile refresh hints only from the same-origin film and matching source/channel", () => {
+    const changed = vi.fn();
+    const view = render(<StartupGate enabled startupUrl="/startup-preview.html" onProfileChanged={changed}>{null}</StartupGate>);
+    let frame = screen.getByTitle("DSH 沉浸式启动动画") as HTMLIFrameElement;
+    let url = new URL(frame.src);
+    const data = { source: "dsh-startup", channel: url.searchParams.get("channel"), type: "profile-changed" };
+    act(() => send(frame, { data, origin: "https://example.invalid" }));
+    act(() => send(frame, { data, source: window }));
+    act(() => send(frame, { data: { ...data, channel: "wrong" } }));
+    expect(changed).not.toHaveBeenCalled();
+    act(() => send(frame, { data }));
+    expect(changed).toHaveBeenCalledOnce();
+    view.unmount();
+    render(<StartupGate enabled startupUrl="http://127.0.0.1:9876/startup-preview.html" onProfileChanged={changed}>{null}</StartupGate>);
+    frame = screen.getByTitle("DSH 沉浸式启动动画") as HTMLIFrameElement;
+    url = new URL(frame.src);
+    act(() => send(frame, { data: { ...data, channel: url.searchParams.get("channel") } }));
+    expect(changed).toHaveBeenCalledOnce();
+  });
   it("renders disabled children directly and has no SSR window dependency", () => {
     expect(
       renderToString(

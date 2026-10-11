@@ -4,7 +4,7 @@
 const $ = id => document.getElementById(id);
 if (!window.DSHBoot || !window.DSHVisuals || !window.DSHLocal || !window.DSHIdentity || !window.DSHText) { $('canvasPane').insertAdjacentHTML('beforeend','<p class="error">请保留同目录的完整预览资源。</p>'); $('play').disabled=true; return; }
 const sequence = new DSHBoot.Sequence();
-const {total,durations} = DSHBoot;
+let {total,durations} = DSHBoot;
 const scoreDurations=[2.8,2.8,3.4,3.2,2.8,3];
 const ui = Object.fromEntries(['sound','theme','play','skip','settings','closeSettings','controlPanel','replay','interactive','speed','seek','currentTime','totalTime','phaseTitle','phaseEnglish','phaseNote','status','identityCard','identityName','identityId','cardName','cardId','identityLine','subtitleZh','subtitleEn','saveIdentity','profileStatus','connectionStatus','connectLocal','inventoryPanel','inventoryMessage','skillsCount','pluginsCount','skillsState','pluginsState','skillsList','pluginsList','inventoryIssues','cardMode','cardNameVisual','cardIdVisual','cardModeVisual','accessForm','accessEntry','accessPassword','accessSubmit','accessState','accessMessage'].map(id => [id,$(id)]));
 const identityView=new DSHIdentity.View(['cardName','cardId','cardMode'].map(id=>({value:ui[id],visual:ui[id+'Visual']})));
@@ -25,6 +25,7 @@ const phases=[
  ['欢迎进入 DSH','WELCOME TO DSH','新的探索，由此开始。','DSH / ONLINE']
 ];
 let light=true,muted=false,speed=1,width=1,height=1,dpr=1;
+let visualStyle=new URLSearchParams(location.search).get('style')==='laterano'?'laterano':'rhine';
 let layoutDirty=true,sceneLayout={identity:null,inventory:null};
 let soundTouched=false,soundInitialized=false;
 let audio=null,master=null,audioSources=[],audioUnavailable=false;
@@ -90,6 +91,16 @@ function scorePhase(){
  const event=(local,fn)=>{const position=local*ratio;if(position>=elapsed-.025)fn(start+Math.max(0,position-elapsed)/speed);};
  const ping=(local,hz,len=.3,gain=.05,type='sine',end=hz)=>event(local,t=>tone(t,hz,len*audioScale,gain,type,end));
  const air=(local,len,gain,hz)=>event(local,t=>noise(t,len*audioScale,gain,hz));
+ if(visualStyle==='laterano'){
+  // Original bright, measured chimes over a soft sustained foundation.
+  const chords=[[196,294,440],[220,330,495],[261.626,392,587.33],[246.94,369.99,554.37],[293.665,440,659.255],[261.626,392,523.251]];
+  const chord=chords[sequence.phase];
+  ping(.02,chord[0]/2,1.7,.065,'sine');
+  chord.forEach((hz,i)=>{ping(.08+i*.15,hz,1.2,.032);ping(.5+i*.19,hz*2,.65,.022,'triangle');});
+  air(.06,.2,.025,2800);ping(1.9,chord[2],.65,.027);air(1.82,.18,.028,1500);
+  if(sequence.phase===5)chord.forEach((hz,i)=>ping(1.4+i*.04,hz,1.25,.033));
+  return;
+ }
  switch(sequence.phase){
  case 0:
   ping(.02,49,1.4,.17,'sine',65);ping(.35,130,1.5,.027,'triangle',780);air(.05,.35,.05,1200);
@@ -116,11 +127,21 @@ function measureSceneLayout(){
  const origin=pane.getBoundingClientRect();
  const rect=node=>{const r=node.getBoundingClientRect();return{x:r.left-origin.left,y:r.top-origin.top,width:r.width,height:r.height};};
  sceneLayout={
+  heading:rect($('stageCopy')),
   identity:ui.identityCard.hidden?null:{...rect(ui.identityCard),rows:identityRows.map(node=>{const r=rect(node);return{y:r.y,height:r.height};})},
   inventory:ui.inventoryPanel.hidden?null:{...rect(ui.inventoryPanel),columns:inventoryColumns.map(rect)}
  };layoutDirty=false;
 }
-function drawScene(){if(!ctx)return;if(layoutDirty)measureSceneLayout();ctx.setTransform(dpr,0,0,dpr,0,0);DSHVisuals.draw(ctx,width,height,{phase:sequence.phase,progress:sequence.progress,time:sequence.time,textAge:manualPause?sequence.elapsed:Math.max(sequence.elapsed,phaseAge),choice:sequence.choices[Math.min(4,sequence.phase)]||0,light,reducedMotion:reducedMotion.matches,pointer,ambientTime,impulse,drag,waiting:sequence.waiting,identity:ui.identityName.value.trim()||local.profile.username,inventory:local.inventory,layout:sceneLayout});}
+function drawScene(){if(!ctx)return;if(layoutDirty)measureSceneLayout();ctx.setTransform(dpr,0,0,dpr,0,0);const renderer=visualStyle==='laterano'&&window.DSHLateranoVisuals?window.DSHLateranoVisuals:DSHVisuals;renderer.draw(ctx,width,height,{phase:sequence.phase,progress:sequence.progress,time:sequence.time,textAge:manualPause?sequence.elapsed:Math.max(sequence.elapsed,phaseAge),choice:sequence.choices[Math.min(4,sequence.phase)]||0,light,reducedMotion:reducedMotion.matches,pointer,ambientTime,impulse,drag,waiting:sequence.waiting,identity:ui.identityName.value.trim()||local.profile.username,inventory:local.inventory,layout:sceneLayout});}
+function applyVisualStyle(value){
+ visualStyle=value==='laterano'?'laterano':'rhine';
+ sequence.setDurations(visualStyle==='laterano'?DSHBoot.lateranoDurations:DSHBoot.durations);
+ durations=sequence.durations;total=sequence.total;
+ ui.seek.max=String(total);ui.totalTime.textContent=total.toFixed(2);
+ document.documentElement.dataset.visualStyle=visualStyle;
+ $('visualStyle').value=visualStyle;
+ layoutDirty=true;signature='';
+}
 function enter(node,keyframes,options){
  const old=entryAnimations.get(node);if(old){old.cancel();entryAnimations.delete(node);}
  if(reducedMotion.matches||typeof node.animate!=='function')return;
@@ -139,12 +160,14 @@ function renderLocal(){
  }
  if(profileSeen!==local.profile){
   profileSeen=local.profile;
+  if(local.connection==='local')applyVisualStyle(local.profile.visual_style);
   if(!profileDirty){ui.identityName.value=local.profile.username;ui.identityId.value=local.profile.badge_id;updateIdentity();}
  }
  ui.connectionStatus.textContent=local.connectionMessage;
  setText($('runtimeBadge'),local.profile.runtime==='native'?'NATIVE':'RUST',{kind:'roll',scope:'global'});
  ui.connectLocal.disabled=local.connection==='connecting';
  ui.saveIdentity.disabled=local.saving||local.locked;
+ $('visualStyle').disabled=local.saving;
  ui.identityName.disabled=local.locked;ui.identityId.disabled=local.locked;
  ui.accessEntry.hidden=!local.locked;ui.accessState.hidden=local.locked;
  ui.accessPassword.disabled=local.unlocking;ui.accessSubmit.disabled=local.unlocking;
@@ -312,6 +335,16 @@ function updateIdentity(){
 }
 function editIdentity(){profileDirty=true;draftRevision++;local.saveMessage='';updateIdentity();renderLocal();}
 ui.identityName.addEventListener('input',editIdentity);ui.identityId.addEventListener('input',editIdentity);
+$('visualStyle').addEventListener('change',async()=>{
+ const previous=local.profile.visual_style,selected=$('visualStyle').value;
+ applyVisualStyle(selected);refresh();
+ if(local.connection!=='local'||local.locked){$('styleStatus').textContent='仅预览 · 连接并验证后可保存风格';return;}
+ const saved=await local.saveStyle(selected);
+ if(saved)window.DSHEmbed?.profileChanged();
+ applyVisualStyle(saved?local.profile.visual_style:previous);
+ $('styleStatus').textContent=saved?'已保存 · 网页、桌面与终端下次启动使用此风格':local.saveMessage;
+ refresh();if(sequence.playing)scorePhase();
+});
 ui.accessForm.addEventListener('submit',async event=>{
  event.preventDefault();if(!local.locked||local.unlocking)return;
  const password=ui.accessPassword.value;
@@ -322,12 +355,12 @@ ui.accessForm.addEventListener('submit',async event=>{
  if(unlocked){window.DSHEmbed?.unlocked();impulse=1;barriers();if(current===generation&&sequence.phase===2&&!sequence.playing)void start();refresh();announce('访问验证通过。');}
  else{ui.accessPassword.focus({preventScroll:true});announce(local.accessMessage);}
 });
-ui.saveIdentity.addEventListener('click',async()=>{const revision=draftRevision;const saved=await local.save(ui.identityName.value,ui.identityId.value);if(saved&&revision===draftRevision){profileDirty=false;ui.identityName.value=local.profile.username;ui.identityId.value=local.profile.badge_id;updateIdentity();}renderLocal();announce(local.saveMessage);});
+ui.saveIdentity.addEventListener('click',async()=>{const revision=draftRevision;const saved=await local.save(ui.identityName.value,ui.identityId.value);if(saved)window.DSHEmbed?.profileChanged();if(saved&&revision===draftRevision){profileDirty=false;ui.identityName.value=local.profile.username;ui.identityId.value=local.profile.badge_id;updateIdentity();}renderLocal();announce(local.saveMessage);});
 ui.connectLocal.addEventListener('click',async()=>{const connected=await local.connect(true);if(connected&&sequence.phase===3&&!sequence.completed){local.cancelLoad();beginLocalLoad();}renderLocal();refresh();});
 new ResizeObserver(resize).observe(pane);window.addEventListener('resize',resize);
 const geometryObserver=new ResizeObserver(()=>{layoutDirty=true;refresh();});geometryObserver.observe($('stageCopy'));geometryObserver.observe(ui.identityCard);geometryObserver.observe(ui.inventoryPanel);
 document.fonts?.ready.then(()=>{layoutDirty=true;refresh();});
 window.addEventListener('pagehide',()=>{generation++;starting=false;sequence.pause();manualPause=true;stopAudio();cancelVoice();local.dispose();cancelAnimationFrame(raf);raf=0;if(audio&&audio.state!=='closed')audio.close();});
 window.addEventListener('pageshow',event=>{if(event.persisted){lastFrame=performance.now();void local.connect(true);refresh();announce('预览已恢复。点按画面继续演出。');}});
-renderLocal();motionChange();resize();void local.connect();window.DSHEmbed?.ready();
+applyVisualStyle(visualStyle);renderLocal();motionChange();resize();void local.connect();window.DSHEmbed?.ready();
 })();

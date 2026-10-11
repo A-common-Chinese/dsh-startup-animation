@@ -8,7 +8,7 @@ use crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
     MouseEventKind,
 };
-use dsh_core::{StartupProfile, StartupSection};
+use dsh_core::{StartupProfile, StartupSection, VisualStyle};
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Alignment, Rect},
@@ -323,7 +323,26 @@ struct Palette {
 }
 
 impl Palette {
-    fn new(theme: &str) -> Self {
+    fn new(theme: &str, visual_style: VisualStyle) -> Self {
+        if visual_style == VisualStyle::Laterano {
+            return if theme == "light" {
+                Self {
+                    bg: Color::Rgb(245, 240, 229),
+                    fg: Color::Rgb(52, 36, 34),
+                    dim: Color::Rgb(121, 95, 78),
+                    grid: Color::Rgb(207, 188, 157),
+                    accent: Color::Rgb(157, 55, 42),
+                }
+            } else {
+                Self {
+                    bg: Color::Rgb(22, 16, 17),
+                    fg: Color::Rgb(244, 231, 204),
+                    dim: Color::Rgb(167, 131, 102),
+                    grid: Color::Rgb(75, 45, 40),
+                    accent: Color::Rgb(228, 113, 81),
+                }
+            };
+        }
         if theme == "light" {
             Self {
                 bg: Color::Rgb(243, 247, 250),
@@ -550,7 +569,11 @@ fn draw(
     muted: bool,
 ) {
     let area = frame.area();
-    let p = Palette::new(&config.theme);
+    let p = Palette::new(&config.theme, context.profile.visual_style);
+    let wordmark = match context.profile.visual_style {
+        VisualStyle::Rhine => "D S H  /  DEEP DIVE",
+        VisualStyle::Laterano => "D S H  /  LATERANO",
+    };
     frame.render_widget(Block::default().style(p.text()), area);
     if area.width < 4 || area.height < 3 {
         return;
@@ -572,7 +595,7 @@ fn draw(
         "点击 / ENTER  注入能量脉冲"
     };
     if area.width < 50 || area.height < 16 {
-        row(frame, inner, 0, "D S H / DEEP DIVE", p.accent(), true);
+        row(frame, inner, 0, wordmark, p.accent(), true);
         row(
             frame,
             inner,
@@ -615,7 +638,7 @@ fn draw(
         frame,
         inner,
         0,
-        "D S H  /  DEEP DIVE",
+        wordmark,
         p.accent().add_modifier(Modifier::BOLD),
         false,
     );
@@ -770,15 +793,20 @@ fn inside_polygon(point: (f64, f64), polygon: &[(f64, f64)]) -> bool {
     inside
 }
 
-fn badge_parts() -> &'static [Vec<(f64, f64)>; 5] {
-    static PARTS: OnceLock<[Vec<(f64, f64)>; 5]> = OnceLock::new();
-    PARTS.get_or_init(|| {
+fn badge_parts(visual_style: VisualStyle) -> &'static [Vec<(f64, f64)>; 5] {
+    static RHINE_PARTS: OnceLock<[Vec<(f64, f64)>; 5]> = OnceLock::new();
+    static LATERANO_PARTS: OnceLock<[Vec<(f64, f64)>; 5]> = OnceLock::new();
+    let (parts, source) = match visual_style {
+        VisualStyle::Rhine => (&RHINE_PARTS, include_str!("../assets/dsh-emblem.json")),
+        VisualStyle::Laterano => (&LATERANO_PARTS, include_str!("../assets/dsh-laterano-emblem.json")),
+    };
+    parts.get_or_init(|| {
         let definition: serde_json::Value =
-            serde_json::from_str(include_str!("../assets/dsh-emblem.json"))
-                .expect("embedded DELTA CIRCUIT geometry must be valid JSON");
+            serde_json::from_str(source)
+                .expect("embedded startup geometry must be valid JSON");
         let contours: [Vec<Vec<(f64, f64)>>; 5] =
             serde_json::from_value(definition["parts"].clone())
-                .expect("embedded DELTA CIRCUIT geometry must contain five contour groups");
+                .expect("embedded startup geometry must contain five contour groups");
         std::array::from_fn(|part| {
             let mut points = Vec::new();
             // Sampling centers avoids asymmetric polygon-boundary inclusion.
@@ -798,7 +826,7 @@ fn badge_parts() -> &'static [Vec<(f64, f64)>; 5] {
     })
 }
 
-fn transformed_badge(center: (f64, f64), scale: f64, separation: f64) -> [Vec<(f64, f64)>; 5] {
+fn transformed_badge(visual_style: VisualStyle, center: (f64, f64), scale: f64, separation: f64) -> [Vec<(f64, f64)>; 5] {
     std::array::from_fn(|part| {
         let direction = if part == 0 || part == 2 || part == 4 {
             -1.0
@@ -811,7 +839,7 @@ fn transformed_badge(center: (f64, f64), scale: f64, separation: f64) -> [Vec<(f
         } else {
             0.0
         };
-        badge_parts()[part]
+        badge_parts(visual_style)[part]
             .iter()
             .map(|&(x, y)| {
                 (
@@ -871,12 +899,17 @@ fn draw_cinematic(
     };
     let badge_scale =
         radius / 100.0 * (0.66 + finale * 0.06) * (0.74 + 0.26 * entrance + impact * 0.16);
-    let emblem = transformed_badge(center, badge_scale, separation);
-    let ghost = transformed_badge(center, badge_scale, 0.0);
+    let visual_style = context.profile.visual_style;
+    let emblem = transformed_badge(visual_style, center, badge_scale, separation);
+    let ghost = transformed_badge(visual_style, center, badge_scale, 0.0);
     let cell_width = 220.0 / f64::from(area.width);
     let cell_height = y_max * 2.0 / f64::from(area.height);
+    let (engraving_y, engraving_width) = match visual_style {
+        VisualStyle::Rhine => (17.0, 42.0),
+        VisualStyle::Laterano => (68.0, 60.0),
+    };
     let native_engraving = separation <= f64::EPSILON
-        && cell_width * 3.0 <= badge_scale * 42.0
+        && cell_width * 3.0 <= badge_scale * engraving_width
         && cell_height <= badge_scale * 22.0;
     let canvas = Canvas::default()
         .background_color(p.bg)
@@ -1337,7 +1370,7 @@ fn draw_cinematic(
             if native_engraving {
                 ctx.print(
                     center.0 - cell_width * 1.5,
-                    center.1 - badge_scale * 17.0,
+                    center.1 - badge_scale * engraving_y,
                     Span::styled("DSH", p.text().add_modifier(Modifier::BOLD)),
                 );
             }
@@ -1418,6 +1451,7 @@ mod tests {
             profile: StartupProfile {
                 username: "星海研究员".into(),
                 badge_id: "部门-七".into(),
+                ..StartupProfile::default()
             },
             ..Default::default()
         };
@@ -1459,6 +1493,7 @@ mod tests {
             profile: StartupProfile {
                 username: "星海研究员".into(),
                 badge_id: "部门-七".into(),
+                ..StartupProfile::default()
             },
             skill_names: vec!["真实技能".into(), "review-rust".into()],
             plugin_names: vec!["本机插件 (local)".into()],
@@ -1547,7 +1582,7 @@ mod tests {
 
     #[test]
     fn delta_circuit_preserves_three_edge_tracks_and_engraved_letter_counters() {
-        let parts = badge_parts();
+        let parts = badge_parts(VisualStyle::Rhine);
         assert!(parts.iter().all(|part| !part.is_empty()));
         // The three large edge tracks, all three engraved letters and scan strata survive.
         for (part, ink) in [
@@ -1573,6 +1608,33 @@ mod tests {
                 !parts.iter().any(|part| part.contains(&hole)),
                 "filled hole at {hole:?}"
             );
+        }
+    }
+
+    #[test]
+    fn laterano_has_distinct_geometry_and_preserves_identity_in_both_palettes() {
+        let parts = badge_parts(VisualStyle::Laterano);
+        assert!(parts.iter().all(|part| !part.is_empty()));
+        assert_ne!(parts, badge_parts(VisualStyle::Rhine));
+        let context = StartupContext {
+            profile: StartupProfile {
+                username: "拉特兰操作员".into(),
+                badge_id: "DSH-LATERANO".into(),
+                visual_style: VisualStyle::Laterano,
+            },
+            ..StartupContext::default()
+        };
+        for theme in ["dark", "light"] {
+            let config = StartupSection { theme: theme.into(), reduced_motion: true, ..StartupSection::default() };
+            assert_ne!(Palette::new(theme, VisualStyle::Laterano).bg, Palette::new(theme, VisualStyle::Rhine).bg);
+            let mut terminal = Terminal::new(TestBackend::new(110, 34)).unwrap();
+            let seq = Sequence { phase: 2, ..Sequence::new(true) };
+            let frame = terminal.draw(|frame| draw(frame, &seq, &config, &context, true)).unwrap();
+            let text = visible_text(frame.buffer);
+            assert!(text.contains("LATERANO"));
+            assert!(text.contains("拉特兰操作员"));
+            assert!(text.contains("DSH-LATERANO"));
+            assert!(text.contains("DSH"));
         }
     }
 

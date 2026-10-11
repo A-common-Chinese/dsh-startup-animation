@@ -3,6 +3,7 @@
   'use strict';
   const messageOf = error => error instanceof Error ? error.message : String(error);
   const text = value => typeof value === 'string' ? value : '';
+  const visualStyle = value => value === 'laterano' ? 'laterano' : 'rhine';
   const emptyInventory = (status = 'idle', message = '') => ({
     status, message, skills: [], plugins: [], issues: [], elapsed_ms: null,
     stages: { skills: 'idle', plugins: 'idle' },
@@ -11,7 +12,7 @@
     constructor({ onChange = () => {}, fetch: request = globalThis.fetch?.bind(globalThis) } = {}) {
       this.request = request; this.onChange = onChange;
       this.connection = 'connecting'; this.connectionMessage = '正在连接本地 DSH';
-      this.profile = { username: 'OPERATOR', badge_id: 'DSH-0001', workspace: '', sound: true };
+      this.profile = { username: 'OPERATOR', badge_id: 'DSH-0001', visual_style: 'rhine', workspace: '', sound: true };
       this.inventory = emptyInventory(); this.saving = false; this.saveMessage = '';
       this.token = ''; this._loadGeneration = 0; this._saveGeneration = 0;
       this._connectGeneration = 0; this._connecting = null;
@@ -32,7 +33,7 @@
       this.validateAccess(result);
       this.access = { supported: true, enabled: result.enabled, unlocked: result.unlocked };
       this.token = result.token;
-      this.profile = { ...this.profile, username: result.profile.username, badge_id: text(result.profile.badge_id) || 'DSH-0001' };
+      this.profile = { ...this.profile, username: result.profile.username, badge_id: text(result.profile.badge_id) || 'DSH-0001', visual_style: visualStyle(result.profile.visual_style) };
       if (typeof result.sound === 'boolean') this.profile.sound = result.sound;
     }
     connect(force = false) {
@@ -70,7 +71,7 @@
           if (result.mode !== 'local' || !text(result.token) || !text(result.username)) throw new Error('本地接口返回了无效资料');
           if (generation !== this._connectGeneration) return false;
           this.token = result.token;
-          this.profile = { username: result.username, badge_id: text(result.badge_id) || 'DSH-0001', workspace: text(result.workspace), sound: result.sound !== false, runtime: result.runtime === 'native' ? 'native' : 'rust', inventory_mode: result.inventory_mode === 'mounted' ? 'mounted' : 'discover' };
+          this.profile = { username: result.username, badge_id: text(result.badge_id) || 'DSH-0001', visual_style: visualStyle(result.visual_style), workspace: text(result.workspace), sound: result.sound !== false, runtime: result.runtime === 'native' ? 'native' : 'rust', inventory_mode: result.inventory_mode === 'mounted' ? 'mounted' : 'discover' };
           this.connection = 'local'; this.connectionMessage = '已连接本地 DSH'; return true;
         } catch (error) {
           if (generation !== this._connectGeneration) return false;
@@ -115,6 +116,13 @@
     async save(username, badge_id) {
       username = text(username).trim(); badge_id = text(badge_id).trim();
       if (!username || !badge_id) { this.saveMessage = '用户名和编号不能为空'; this.emit(); return false; }
+      return this.saveProfile({ username, badge_id });
+    }
+    async saveStyle(visual_style) {
+      if (!['rhine', 'laterano'].includes(visual_style)) return false;
+      return this.saveProfile({ visual_style });
+    }
+    async saveProfile(update) {
       const generation = ++this._saveGeneration;
       this._saveAbort?.abort(); const controller = new AbortController(); this._saveAbort = controller;
       this.saving = true; this.saveMessage = '正在保存到本地…'; this.emit();
@@ -123,12 +131,13 @@
         if (!await this.connect()) throw new Error('未连接本地 DSH，资料未保存');
         if (this.locked) throw new Error('请先验证访问密码');
         if (generation !== this._saveGeneration) return false;
-        const response = await this.request('/api/profile', { method: 'POST', signal: controller.signal, credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-DSH-Token': this.token }, body: JSON.stringify({ username, badge_id }) });
+        const response = await this.request('/api/profile', { method: 'POST', signal: controller.signal, credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-DSH-Token': this.token }, body: JSON.stringify(update) });
         if (!response.ok) throw await this.failure(response, '保存失败');
         const result = await response.json();
         if (!text(result.username) || !text(result.badge_id)) throw new Error('保存接口未确认资料');
+        if (update.visual_style && result.visual_style !== update.visual_style) throw new Error('当前服务尚不支持风格保存，请更新 DSH');
         if (generation !== this._saveGeneration) return false;
-        this.profile = { ...this.profile, username: result.username, badge_id: result.badge_id };
+        this.profile = { ...this.profile, username: result.username, badge_id: result.badge_id, visual_style: visualStyle(result.visual_style ?? this.profile.visual_style) };
         this.saveMessage = '已保存到本地，下次启动生效'; return true;
       } catch (error) {
         if (generation === this._saveGeneration) this.saveMessage = '保存失败 · ' + (error?.name === 'AbortError' ? '请求超时，请重试' : messageOf(error));

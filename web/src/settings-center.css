@@ -79,7 +79,7 @@
   gap: 9px;
   padding: 0 10px 19px;
 }
-.sc-brand canvas {
+.sc-brand .dsh-emblem {
   color: var(--sc-text);
 }
 .sc-brand h2 {
@@ -941,7 +941,7 @@
   .sc-brand h2 {
     font-size: 17px;
   }
-  .sc-brand canvas {
+  .sc-brand .dsh-emblem {
     width: 24px !important;
     height: 24px !important;
   }

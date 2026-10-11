@@ -22,6 +22,7 @@
     ready() { send('ready'); },
     // The parent rechecks its own backend cookie before opening the workbench.
     unlocked() { if (!finished) send('unlocked'); },
+    profileChanged() { if (!finished) send('profile-changed'); },
     finish(reason) {
       if (!target || finished || !['complete', 'skip'].includes(reason)) return false;
       finished = true;

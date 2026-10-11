@@ -1,47 +1,29 @@
-import { useEffect, useRef } from "react";
-
-declare global {
-  interface Window {
-    DSHEmblem?: { name: string; parts: number[][][][] };
-  }
-}
+import { emblemGeometry, emblemPaths } from "./emblemGeometry";
+import { useVisualStyle } from "./visualStyle";
+import type { VisualStyle } from "./types";
 export function Emblem({
   size = 42,
   className = "",
+  visualStyle,
 }: {
   size?: number;
   className?: string;
+  visualStyle?: VisualStyle;
 }) {
-  const canvas = useRef<HTMLCanvasElement>(null);
-  useEffect(() => {
-    const element = canvas.current;
-    const ctx = element?.getContext("2d");
-    if (!element || !ctx || !window.DSHEmblem) return;
-    const ratio = Math.min(window.devicePixelRatio || 1, 3);
-    element.width = size * ratio;
-    element.height = size * ratio;
-    ctx.scale(ratio, ratio);
-    ctx.translate(size / 2, size / 2);
-    ctx.scale(size / 212, size / 212);
-    ctx.fillStyle = getComputedStyle(element).color;
-    for (const part of window.DSHEmblem.parts) {
-      ctx.beginPath();
-      for (const contour of part) {
-        contour.forEach(([x, y], index) =>
-          index ? ctx.lineTo(x, y) : ctx.moveTo(x, y),
-        );
-        ctx.closePath();
-      }
-      ctx.fill("evenodd");
-    }
-  }, [size]);
+  const activeStyle = useVisualStyle();
+  const style = visualStyle || activeStyle;
+  const geometry = emblemGeometry(style);
   return (
-    <canvas
-      ref={canvas}
-      className={className}
+    <svg
+      className={`dsh-emblem ${className}`}
       style={{ width: size, height: size }}
-      aria-label="DSH DELTA CIRCUIT 部门徽章"
+      viewBox={style === "laterano" ? "-118 -118 236 236" : "-106 -106 212 212"}
+      fill="currentColor"
+      fillRule="evenodd"
+      aria-label={`DSH ${geometry?.name || (style === "laterano" ? "CONCORD" : "DELTA CIRCUIT")} 部门徽章`}
       role="img"
-    />
+    >
+      {emblemPaths(geometry).map((path, index) => <path key={index} d={path} />)}
+    </svg>
   );
 }

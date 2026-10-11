@@ -7,6 +7,8 @@ description = "Native Windows WebView2 window for the DSH Harness"
 
 [dependencies]
 anyhow.workspace = true
+dsh-core = { path = "../dsh-core" }
+serde_json.workspace = true
 url = "2"
 
 [target.'cfg(windows)'.dependencies]

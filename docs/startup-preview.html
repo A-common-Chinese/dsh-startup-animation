@@ -67,6 +67,7 @@ h1{font-weight:800;letter-spacing:.18em;font-feature-settings:"palt";text-indent
 @media(max-width:600px){.identity-phase .stage-copy{top:30%}.identity-card .access-row{grid-template-columns:91px minmax(0,1fr)}.identity-card .access-feedback{font-size:9px}.identity-card .identity-source{font-size:7px}}
 @media(max-height:600px){.identity-phase .stage-copy{top:26%}.identity-phase .phase-note{display:none}.identity-phase .identity-card{top:calc(100% + 12px)}.identity-card .identity-row{min-height:34px;padding:5px 0}.identity-card .access-feedback{margin:0 0 4px;min-height:14px}.identity-card .identity-source{padding-top:6px}}
 </style>
+<link rel="stylesheet" href="startup-laterano.css?v=20261011-concord2">
 </head>
 <body>
 <div class="shell">
@@ -95,6 +96,7 @@ h1{font-weight:800;letter-spacing:.18em;font-feature-settings:"palt";text-indent
 <div class="timeline-row"><label for="seek" class="sr-only">演出进度，单位为秒；读取阶段会等待本地结果</label><input id="seek" type="range" min="0" max="13.8" step="0.01" value="0"><span class="time"><output id="currentTime">00.00</output> / <span id="totalTime">13.80</span></span></div>
 <div class="control-row"><button type="button" id="play" aria-label="开始演出">开始</button><button id="replay" type="button">重播</button><button id="interactive" type="button" aria-pressed="true">三段交互</button><label>速度 <select id="speed" aria-label="播放速度"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="1.5">1.5×</option><option value="2">2×</option></select></label></div>
 <div class="identity-settings"><label>访问身份<input id="identityName" maxlength="32" value="OPERATOR" autocomplete="off" aria-label="本地用户名"></label><label>档案编号<input id="identityId" maxlength="32" value="DSH-0001" autocomplete="off" aria-label="本地档案编号"></label></div>
+<div class="visual-style-setting"><label for="visualStyle">视觉风格<select id="visualStyle" aria-label="视觉风格"><option value="rhine">莱茵生命风 UI</option><option value="laterano">拉特兰风 UI</option></select></label><p id="styleStatus" role="status">选择后自动保存；两套 Logo、图标与开场独立保留。</p></div>
 <div class="profile-actions"><button id="saveIdentity" type="button">保存资料</button><p class="profile-state" id="profileStatus" role="status">正在读取本地资料</p></div>
 <div class="connection-row"><p class="connection-state" id="connectionStatus">正在连接本地 DSH</p><button id="connectLocal" type="button">重新连接</button></div>
 <div class="header-tools"><button id="sound" type="button" aria-pressed="true" aria-label="声音已开启，点击关闭">声音 · 开</button><button id="theme" type="button" aria-label="切换到深色档案">深色</button><button id="skip" type="button" aria-label="跳过启动动画">跳过 ↗</button></div>
@@ -102,5 +104,5 @@ h1{font-weight:800;letter-spacing:.18em;font-feature-settings:"palt";text-indent
 </section>
 <div class="archive-subtitle"><span id="subtitleZh" data-motion="mask" data-motion-delay="0.12">深潜协议 · 等待接入</span><span id="subtitleEn" data-motion="type" data-motion-delay="0.22">DEEP DIVE / AWAITING CONNECTION</span></div><p id="status" class="sr-only" role="status" aria-live="polite">档案待命。点按画面任意位置开始。</p>
 </div>
-<script src="startup-sequence.js?v=20261009-access1"></script><script src="startup-emblem.js?v=20261009-access1"></script><script src="startup-text.js?v=20261009-access1"></script><script src="startup-visuals.js?v=20261009-access1"></script><script src="startup-local.js?v=20261009-access1"></script><script src="startup-identity.js?v=20261009-access1"></script><script src="startup-voice.js?v=20261009-access1"></script><script src="startup-embed.js?v=20261009-access1"></script><script src="startup-preview.js?v=20261009-access1"></script>
+<script src="startup-sequence.js?v=20261011-concord2"></script><script src="startup-emblem.js?v=20261011-concord2"></script><script src="startup-laterano-emblem.js?v=20261011-concord2"></script><script src="startup-text.js?v=20261011-concord2"></script><script src="startup-visuals.js?v=20261011-concord2"></script><script src="startup-laterano.js?v=20261011-concord2"></script><script src="startup-local.js?v=20261011-concord2"></script><script src="startup-identity.js?v=20261011-concord2"></script><script src="startup-voice.js?v=20261011-concord2"></script><script src="startup-embed.js?v=20261011-concord2"></script><script src="startup-preview.js?v=20261011-concord2"></script>
 </body></html>

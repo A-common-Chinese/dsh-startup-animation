@@ -5,7 +5,7 @@ import * as api from "./api";
 import { consumeInitialPlayback } from "./preferences";
 import type { AccessStatus, Bootstrap } from "./types";
 
-vi.mock("./App", () => ({ App: () => <div>Private workbench</div> }));
+vi.mock("./App", () => ({ App: ({ latestProfile }: { latestProfile?: { visual_style?: string } }) => <div data-profile-style={latestProfile?.visual_style}>Private workbench</div> }));
 vi.mock("./Emblem", () => ({ Emblem: () => <span>DSH</span> }));
 vi.mock("./api", async (original) => ({ ...(await original<typeof import("./api")>()), accessStatus: vi.fn(), bootstrap: vi.fn(), post: vi.fn() }));
 vi.mock("./preferences", () => ({ consumeInitialPlayback: vi.fn() }));
@@ -29,6 +29,50 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.resetAllMocks(); vi.unstubAllGlobals(); });
 
 describe("Access-gated Harness", () => {
+  it("rechecks an embedded profile change and updates the workbench without bootstrapping or restarting the film", async () => {
+    vi.mocked(api.accessStatus).mockResolvedValue({ ...status, unlocked: true });
+    vi.mocked(consumeInitialPlayback).mockReturnValue(true);
+    render(<HarnessRoot />);
+    const frame = await screen.findByTitle("DSH 沉浸式启动动画") as HTMLIFrameElement;
+    await waitFor(() => expect(api.bootstrap).toHaveBeenCalledOnce());
+    const originalUrl = frame.src;
+    vi.mocked(api.accessStatus).mockResolvedValue({ ...status, unlocked: true, profile: { ...status.profile, visual_style: "laterano" } });
+    await act(async () => send(frame, "profile-changed"));
+    expect(api.accessStatus).toHaveBeenCalledTimes(2);
+    expect(api.bootstrap).toHaveBeenCalledOnce();
+    expect(document.documentElement.dataset.visualStyle).toBe("laterano");
+    expect(screen.getByText("Private workbench").getAttribute("data-profile-style")).toBe("laterano");
+    expect(screen.getByTitle("DSH 沉浸式启动动画")).toBe(frame);
+    expect(frame.src).toBe(originalUrl);
+    act(() => send(frame, "complete"));
+    expect(screen.getByText("Private workbench").closest("[hidden]")).toBeNull();
+  });
+
+  it("reports an unsuccessful embedded profile refresh and can retry without replacing the workbench", async () => {
+    vi.mocked(api.accessStatus).mockResolvedValue({ ...status, unlocked: true });
+    vi.mocked(consumeInitialPlayback).mockReturnValue(true);
+    render(<HarnessRoot />);
+    const frame = await screen.findByTitle("DSH 沉浸式启动动画") as HTMLIFrameElement;
+    await waitFor(() => expect(api.bootstrap).toHaveBeenCalledOnce());
+    vi.mocked(api.accessStatus).mockRejectedValueOnce(new Error("profile service offline"));
+    await act(async () => send(frame, "profile-changed"));
+    act(() => send(frame, "complete"));
+    expect(screen.getByRole("alert").textContent).toContain("profile service offline");
+    expect(screen.getByText("Private workbench")).toBeTruthy();
+    vi.mocked(api.accessStatus).mockResolvedValue({ ...status, unlocked: true, profile: { ...status.profile, visual_style: "laterano" } });
+    fireEvent.click(screen.getByRole("button", { name: "重新同步" }));
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    expect(api.bootstrap).toHaveBeenCalledOnce();
+  });
+  it("loads the saved visual style into the locked page and film without requesting private data", async () => {
+    vi.mocked(api.accessStatus).mockResolvedValue({ ...status, profile: { ...status.profile, visual_style: "laterano" } });
+    vi.mocked(consumeInitialPlayback).mockReturnValue(true);
+    render(<HarnessRoot />);
+    const frame = await screen.findByTitle("DSH 沉浸式启动动画") as HTMLIFrameElement;
+    expect(new URL(frame.src).searchParams.get("style")).toBe("laterano");
+    expect(document.documentElement.dataset.visualStyle).toBe("laterano");
+    expect(api.bootstrap).not.toHaveBeenCalled();
+  });
   it("reports a usable locked native entry without fetching private bootstrap", async () => {
     const postMessage = vi.fn();
     vi.stubGlobal("__DSH_DESKTOP__", true);

@@ -11,7 +11,7 @@ const assetRoot = fileURLToPath(new URL('./assets/', import.meta.url));
 // Cordis publishes FiberState as an erased TypeScript const enum, not a JS
 // export. These values are verified against the pinned official release.
 const ACTIVE = 2, FAILED = 3;
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json', '.wav': 'audio/wav', '.mp3': 'audio/mpeg', '.woff2': 'font/woff2', '.txt': 'text/plain; charset=utf-8' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json', '.wav': 'audio/wav', '.mp3': 'audio/mpeg', '.woff2': 'font/woff2', '.txt': 'text/plain; charset=utf-8' };
 const json = (res, status, value) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(value)); };
 
 export function localRequest(req, port, token, mutation = false) {
@@ -100,7 +100,7 @@ export function apply(ctx, config = {}) {
           saveSettings(profileInput(await body(req)));
         } else if (req.method !== 'GET') return json(res, 405, { error: 'Method not allowed.' });
         const value = settings();
-        return json(res, 200, { mode: 'local', token, username: value.username, badge_id: value.badge_id, sound: value.sound, workspace: process.cwd(), inventory_mode: 'mounted', runtime: 'native', runtime_label: 'NATIVE' });
+        return json(res, 200, { mode: 'local', token, username: value.username, badge_id: value.badge_id, visual_style: value.visual_style, sound: value.sound, workspace: process.cwd(), inventory_mode: 'mounted', runtime: 'native', runtime_label: 'NATIVE' });
       }
       if (path === '/api/load' && req.method === 'POST') {
         if (!localRequest(req, ctx.webServer.port, token, true)) return json(res, 403, { error: 'Invalid local request.' });

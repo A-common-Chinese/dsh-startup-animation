@@ -1237,7 +1237,7 @@ pre {
     right: 2%;
     top: 18%;
   }
-  .welcome-mark canvas {
+  .welcome-mark .dsh-emblem {
     width: 104px !important;
     height: 104px !important;
   }
@@ -1323,7 +1323,7 @@ pre {
   .welcome-mark {
     top: 13%;
   }
-  .welcome-mark canvas {
+  .welcome-mark .dsh-emblem {
     width: 115px !important;
     height: 115px !important;
   }

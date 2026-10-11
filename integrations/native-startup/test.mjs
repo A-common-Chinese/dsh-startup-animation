@@ -5,6 +5,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { chooseNext, consumeNext, dataDirectory, profileInput, saveSettings, settings } from './state.mjs';
+
+test('visual style patch validates exact values without overwriting identity', () => {
+  assert.deepEqual(profileInput({ visual_style: 'laterano' }), { visual_style: 'laterano' });
+  assert.deepEqual(profileInput({ username: 'Operator' }), { username: 'Operator' });
+  for (const visual_style of [null, '', 'gold', 1, {}]) assert.throws(() => profileInput({ visual_style }), /Visual style/);
+});
 import { prepareArguments } from './cli.mjs';
 
 test('native overlay patch precedes app flags and preserves the official invocation', () => {

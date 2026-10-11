@@ -13,6 +13,7 @@ import { readUiPreferences, resetUiPreferences } from "./uiPreferences";
 import type { useHarness } from "./useHarness";
 import type { Bootstrap } from "./types";
 import * as api from "./api";
+import { acceptVisualProfile, readVisualStyle } from "./visualStyle";
 
 vi.mock("./api", async (original) => ({
   ...(await original<typeof import("./api")>()),
@@ -147,6 +148,7 @@ function category(name: string) {
   );
 }
 beforeEach(() => {
+  acceptVisualProfile({});
   localStorage.clear();
   resetUiPreferences();
   vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
@@ -163,6 +165,35 @@ afterEach(() => {
 });
 
 describe("Settings center", () => {
+  it("saves the selected visual style without changing identity and reports a failed write", async () => {
+    const state = harness();
+    vi.mocked(api.post).mockRejectedValueOnce(new Error("style write failed"))
+      .mockResolvedValueOnce({ ...data.profile, visual_style: "laterano" });
+    render(<SettingsCenter harness={state} onReplay={vi.fn()} onOpenChange={vi.fn()} open />);
+    await ready();
+    category("外观");
+    expect(screen.getByRole("button", { name: "莱茵生命风 UI" }).getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "拉特兰风 UI" }));
+    expect(await screen.findByRole("alert")).toHaveProperty("textContent", "style write failed");
+    expect(readVisualStyle()).toBe("rhine");
+    expect(state.setData).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "拉特兰风 UI" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "拉特兰风 UI" }).getAttribute("aria-pressed")).toBe("true"));
+    expect(api.post).toHaveBeenLastCalledWith("/api/profile", "local-token", { visual_style: "laterano" });
+    expect(state.setData).toHaveBeenCalledOnce();
+    category("启动动画");
+    expect(screen.getByRole("button", { name: "拉特兰风 UI" }).getAttribute("aria-pressed")).toBe("true");
+    expect(readUiPreferences().accent).toBe("#3679af");
+  });
+
+  it("restores Laterano from the saved backend profile when settings is opened again", async () => {
+    const state = { ...harness(), data: { ...data, profile: { ...data.profile, visual_style: "laterano" as const } } };
+    render(<SettingsCenter harness={state} onReplay={vi.fn()} onOpenChange={vi.fn()} open />);
+    await ready();
+    category("外观");
+    expect(screen.getByRole("button", { name: "拉特兰风 UI" }).getAttribute("aria-pressed")).toBe("true");
+    expect(api.post).not.toHaveBeenCalled();
+  });
   it("selects the original fat fish and persists the optional pet preference", async () => {
     render(<SettingsCenter harness={harness()} onReplay={vi.fn()} onOpenChange={vi.fn()} open />);
     await ready();

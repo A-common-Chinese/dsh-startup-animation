@@ -1,4 +1,5 @@
-export type Profile = { username: string; badge_id: string };
+export type VisualStyle = "rhine" | "laterano";
+export type Profile = { username: string; badge_id: string; visual_style?: VisualStyle };
 export type AccessStatus = {
   enabled: boolean;
   unlocked: boolean;

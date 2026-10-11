@@ -101,6 +101,10 @@ def main() -> None:
                 profile = json.loads(request("/api/profile", {"username": "NativeFixture", "badge_id": "DSH-QA-27"}, profile["token"]))
                 assert profile["username"] == "NativeFixture"
                 assert json.loads(request("/api/profile"))["badge_id"] == "DSH-QA-27"
+                profile = json.loads(request("/api/profile", {"visual_style": "laterano"}, profile["token"]))
+                assert profile["visual_style"] == "laterano" and profile["username"] == "NativeFixture"
+                profile = json.loads(request("/api/profile", {"username": "NativeFixtureUpdated"}, profile["token"]))
+                assert profile["visual_style"] == "laterano" and profile["badge_id"] == "DSH-QA-27"
                 events = [json.loads(line) for line in request("/api/load", {}, profile["token"]).decode("utf-8").splitlines()]
                 inventory = events[-1]
                 assert inventory["type"] == "complete"
@@ -109,6 +113,9 @@ def main() -> None:
                 assert len(inventory["plugins"]) > 5
                 html = request("/startup-preview.html").decode("utf-8")
                 assert "/__dsh_startup/bridge.js" in html
+                assert "startup-laterano.js" in html
+                for asset in ("/startup-laterano.js", "/startup-laterano-emblem.js", "/startup-laterano.css"):
+                    assert len(request(asset)) > 100
                 assert len(request("/assets/voice/phase-3-mounted.wav")) > 1000
                 assert len(request("/assets/fonts/dsh-industrial-sc.woff2")) > 1000
                 print(json.dumps({"passed": True, "official_version": "0.2.0-rc.2", "skills": len(inventory["skills"]), "mounted_plugins": len(inventory["plugins"]), "issues": len(inventory["issues"]), "fixture_workspace": str(workspace)}, ensure_ascii=False), flush=True)

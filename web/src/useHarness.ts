@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, bootstrap, errorText, isAbort, rpc } from "./api";
 import { deliverNotice, noticeForEvent, type HarnessNotice } from "./notifications";
+import { acceptVisualProfile } from "./visualStyle";
 import {
   acceptTurn,
   beginTurn,
@@ -15,12 +16,25 @@ import type {
   EventBatch,
   Envelope,
   LiveTurn,
+  Profile,
   SessionResult,
   SessionSummary,
 } from "./types";
 
-export function useHarness(initialData?: Bootstrap) {
+export function useHarness(initialData?: Bootstrap, latestProfile?: Profile) {
   const [data, setData] = useState<Bootstrap>();
+  useEffect(() => { if (data) acceptVisualProfile(data.profile); }, [data?.profile]);
+  useEffect(() => {
+    if (!latestProfile) return;
+    setData((previous) => {
+      if (!previous || (previous.profile.username === latestProfile.username &&
+          previous.profile.badge_id === latestProfile.badge_id &&
+          previous.profile.visual_style === latestProfile.visual_style)) return previous;
+      return { ...previous, profile: latestProfile };
+    });
+    // Apply only a newly verified parent snapshot. A reconnect may change the
+    // token and already contain a fresher profile than the previous snapshot.
+  }, [latestProfile]);
   const [connectionError, setConnectionError] = useState("");
   const [eventError, setEventError] = useState("");
   const [error, setError] = useState("");

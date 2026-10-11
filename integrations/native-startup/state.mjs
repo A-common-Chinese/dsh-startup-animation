@@ -22,7 +22,7 @@ export function settings() {
   const value = readJson(join(dataDirectory(), 'settings.json'), {});
   let username = 'OPERATOR';
   try { username = userInfo().username || username; } catch { /* No OS user database in some containers. */ }
-  return { enabled: false, sound: true, username, badge_id: 'DSH-0001', ...value };
+  return { enabled: false, sound: true, username, badge_id: 'DSH-0001', visual_style: 'rhine', ...value };
 }
 export function saveSettings(update) {
   const value = { ...settings(), ...update };
@@ -39,11 +39,17 @@ export function consumeNext() {
   finally { unlinkSync(claimed); }
 }
 export function profileInput(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Profile must be an object.');
   const result = {};
   for (const key of ['username', 'badge_id']) {
+    if (!Object.hasOwn(value, key)) continue;
     const text = value?.[key];
     if (typeof text !== 'string' || !text.trim() || text.length > (key === 'username' ? 64 : 40) || /[\x00-\x1f\x7f]/.test(text)) throw new Error('Username / badge must be nonempty printable text (64 / 40 characters maximum).');
     result[key] = text.trim();
+  }
+  if (Object.hasOwn(value, 'visual_style')) {
+    if (!['rhine', 'laterano'].includes(value.visual_style)) throw new Error('Visual style must be rhine or laterano.');
+    result.visual_style = value.visual_style;
   }
   return result;
 }
