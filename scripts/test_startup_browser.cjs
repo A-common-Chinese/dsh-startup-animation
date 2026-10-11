@@ -62,6 +62,7 @@ function createHarness(options = {}) {
   const requests = [];
   const messages = [];
   const canvasCalls = [];
+  const resizeObservers = [];
   let generatedNode = 0;
   async function request(url, init = {}) {
     requests.push({ url, ...init });
@@ -82,13 +83,13 @@ function createHarness(options = {}) {
         textContent: '', dataset: {}, style: { setProperty(name, value) { this[name] = value; } }, classList: classList(), attributes: new Map(),
         captures: new Set(),
         children: [],
-        appendChild(child) { this.children.push(child); return child; },
-        replaceChildren(...children) { this._text = ''; this.children = children; },
+        appendChild(child) { child.parentElement = child.parentNode = this; this.children.push(child); return child; },
+        replaceChildren(...children) { this._text = ''; this.children = []; children.forEach(child => this.appendChild(child)); },
         setAttribute(name, value) { this.attributes.set(name, value); },
         removeAttribute(name) { this.attributes.delete(name); },
         getAttribute(name) { return this.attributes.get(name); },
         getBoundingClientRect() {
-          const r = options.rectangles?.[id] || { left: 0, top: 0, width: 1000, height: 800 };
+          const r = options.rectangleFor?.(this) || options.rectangles?.[id] || { left: 0, top: 0, width: 1000, height: 800 };
           return { ...r, right: r.left + r.width, bottom: r.top + r.height };
         },
         getContext() {
@@ -123,6 +124,9 @@ function createHarness(options = {}) {
           return (options.offsets?.[id] || options.rectangles?.[id] || { left: 0, top: 0, width: 1000, height: 800 })[field];
         } });
       }
+      for (const property of ['clientHeight', 'scrollHeight', 'scrollTop']) Object.defineProperty(node, property, {
+        get() { return options.metrics?.[id]?.[property] ?? (property === 'scrollTop' ? 0 : this.getBoundingClientRect().height); },
+      });
       elements.set(id, node);
     }
     return elements.get(id);
@@ -180,7 +184,10 @@ function createHarness(options = {}) {
     URL, URLSearchParams, location: { search: options.search || '' },
     performance: { now: () => now }, devicePixelRatio: 1,
     matchMedia: () => ({ matches: !!options.reducedMotion, addEventListener() {} }),
-    ResizeObserver: class { observe() {} },
+    ResizeObserver: class {
+      constructor(callback) { this.callback = callback; this.nodes = new Set(); resizeObservers.push(this); }
+      observe(node) { this.nodes.add(node); }
+    },
     DSHVisuals: { draw(_ctx, _width, _height, state) { drawStates.push({ ...state }); } },
     DSHLateranoVisuals: { draw(_ctx, _width, _height, state) { drawStates.push({ ...state, visualStyle: 'laterano' }); } },
     DSHVoice: options.voice,
@@ -197,6 +204,7 @@ function createHarness(options = {}) {
 
   return {
     element, document, windowEvents, frames, contexts, sources, animations, drawStates, requests, messages, canvasCalls,
+    resizeNode(id) { for (const observer of resizeObservers) if (observer.nodes.has(element(id))) observer.callback(); },
     releaseAudio() { pendingAudio.splice(0).forEach(resolve => resolve()); },
     tap() {
       const stage = element('experience');
@@ -805,23 +813,47 @@ async function main() {
   // Model flex reflow at the actual DOM mutation: revealing the real issue
   // message shortens both leaves, while the outer panel keeps the same size.
   const leafHeight = () => book && !book.element('inventoryIssues').hidden ? 238 : 260;
+  const bookRectangles = {
+    canvasPane: { left: 47, top: 31, width: 1280, height: 720 },
+    stageCopy: { left: 290, top: 125, width: 700, height: 130 },
+    inventoryPanel: { left: 230, top: 330, width: 924, height: 314 },
+    inventoryBook: { left: 230, top: 330, width: 924, get height() { return leafHeight(); } },
+    skillsPage: { left: 230, top: 330, width: 438, get height() { return leafHeight(); } },
+    pluginsPage: { left: 688, top: 330, width: 466, get height() { return leafHeight(); } },
+    skillsHeading: { left: 270, top: 354, width: 358, height: 31 },
+    pluginsHeading: { left: 728, top: 354, width: 386, height: 31 },
+    skillsList: { left: 270, top: 398, width: 358, get height() { return leafHeight() - 110; } },
+    pluginsList: { left: 728, top: 398, width: 386, get height() { return leafHeight() - 110; } },
+  };
+  const rowMetrics = {
+    skillsList: { rowHeight: 42, messageHeight: 18, scrollTop: 0, get clientHeight() { return bookRectangles.skillsList.height; }, get scrollHeight() { return this.extent ?? this.clientHeight; } },
+    pluginsList: { rowHeight: 42, messageHeight: 18, scrollTop: 0, get clientHeight() { return bookRectangles.pluginsList.height; }, get scrollHeight() { return this.extent ?? this.clientHeight; } },
+  };
   book = createHarness({ fetch: lateranoFetch(bookStream),
     selectors: { '.inventory-column': ['skillsPage', 'pluginsPage'] },
-    rectangles: {
-      canvasPane: { left: 47, top: 31, width: 1280, height: 720 },
-      stageCopy: { left: 290, top: 125, width: 700, height: 130 },
-      inventoryPanel: { left: 230, top: 330, width: 924, height: 314 },
-      inventoryBook: { left: 230, top: 330, width: 924, get height() { return leafHeight(); } },
-      skillsPage: { left: 230, top: 330, width: 438, get height() { return leafHeight(); } },
-      pluginsPage: { left: 688, top: 330, width: 466, get height() { return leafHeight(); } },
+    rectangles: bookRectangles, metrics: rowMetrics,
+    rectangleFor(node) {
+      const parent = node.parentElement, metrics = rowMetrics[parent?.id];
+      if (!metrics) return null;
+      const list = bookRectangles[parent.id], row = node.className === 'inventory-row';
+      return { left: list.left, top: list.top + (row ? parent.children.indexOf(node) * metrics.rowHeight : 0) - metrics.scrollTop,
+        width: list.width - 5, height: row ? metrics.rowHeight : metrics.messageHeight };
     },
   }); await settle();
   book.element('seek').value = '9.6'; book.element('seek').emit('input');
   assert.equal(book.drawStates.at(-1).bookOpen, 0);
-  assert.deepEqual(JSON.parse(JSON.stringify(book.drawStates.at(-1).layout.book)), {
+  const measuredSpread = book.drawStates.at(-1).layout.book;
+  const boxOnly = ({ x, y, width, height }) => ({ x, y, width, height });
+  assert.deepEqual({ ...boxOnly(measuredSpread), gutterX: measuredSpread.gutterX, spread: measuredSpread.spread,
+    left: boxOnly(measuredSpread.left), right: boxOnly(measuredSpread.right) }, {
     x: 183, y: 299, width: 924, height: 260, gutterX: 631, spread: true,
     left: { x: 183, y: 299, width: 438, height: 260 }, right: { x: 641, y: 299, width: 466, height: 260 },
   }, 'folio bounds and spine must derive from actual DOM leaves relative to the canvas pane');
+  assert.deepEqual(JSON.parse(JSON.stringify(measuredSpread.left.heading)), { x: 223, y: 323, width: 358, height: 31 },
+    'the page heading needs its own actual exclusion, including the nonzero pane origin');
+  assert.deepEqual(JSON.parse(JSON.stringify(measuredSpread.left.list)), { x: 223, y: 367, width: 358, height: 150 });
+  assert.equal(measuredSpread.left.occupiedBottom, 385, 'an empty-state lettering span occupies its real text height, not the whole flex list');
+  assert.equal(measuredSpread.left.footerY, 517, 'the ornament area must stop before the reserved folio footer');
   book.tap(); await settle(); book.frame(401);
   assert.equal(book.drawStates.at(-1).bookOpen, 0, 'a direct book seek must still construct covers before revealing body text');
   book.frame(1601);
@@ -842,6 +874,33 @@ async function main() {
   assert.equal(arrivedPose.layout.book.height, 238, 'the folio must remeasure after the real issue message compresses its flex area');
   assert.equal(arrivedPose.layout.book.left.height, 238);
   assert.equal(arrivedPose.layout.book.right.height, 238, 'both leaf baselines must follow the new measured height');
+  assert.equal(arrivedPose.layout.book.left.occupiedBottom, 409, 'true inventory arrival must replace message bounds with the real rendered row bounds');
+  assert.equal(arrivedPose.layout.book.left.footerY, 495, 'the reserved footer must follow issue-driven flex reflow');
+  const decorationAge = arrivedPose.bookAge;
+  // A long name/source can wrap after font loading or responsive reflow without
+  // changing the outer page. The actual list observer must move the safe area.
+  rowMetrics.skillsList.rowHeight = 96;
+  bookRectangles.skillsHeading.height = 47;
+  bookRectangles.skillsList.top = 414;
+  book.resizeNode('skillsList');
+  const wrappedPage = book.drawStates.at(-1).layout.book.left;
+  assert.equal(wrappedPage.heading.height, 47, 'wrapped heading bounds must be remeasured');
+  assert.equal(wrappedPage.occupiedBottom, 479, 'ornaments must follow the full wrapped row height');
+  assert.equal(book.drawStates.at(-1).bookAge, decorationAge, 'content reflow must not restart layered page ornamentation');
+  rowMetrics.skillsList.extent = 500;
+  rowMetrics.skillsList.scrollTop = 360;
+  book.element('skillsList').emit('scroll');
+  const scrolledPage = book.drawStates.at(-1).layout.book.left;
+  assert.equal(scrolledPage.occupiedBottom, scrolledPage.list.y + scrolledPage.list.height,
+    'overflow reserves the whole viewport even near the end of a scrolled list; seals must not appear between real entries');
+  assert.equal(book.drawStates.at(-1).layout.book.right.occupiedBottom, 409, 'independently scrolling Skills must not alter Plugins bounds');
+  rowMetrics.skillsList.rowHeight = 42;
+  rowMetrics.skillsList.scrollTop = 0;
+  delete rowMetrics.skillsList.extent;
+  bookRectangles.skillsHeading.height = 31;
+  bookRectangles.skillsList.top = 398;
+  book.resizeNode('skillsHeading');
+  assert.equal(book.drawStates.at(-1).layout.book.left.occupiedBottom, 409, 'the independent heading observer must restore the safe area after a reflow');
   book.frame(2501);
   const originalSkillRow = book.element('skillsList').children[0];
   assert.equal(originalSkillRow.children[0].getAttribute('data-lettering'), 'settled');
@@ -914,7 +973,7 @@ async function main() {
     'half speed must not finish the folio at normal-speed wall time');
   normalSpeed.windowEvents.emit('pagehide'); halfSpeed.windowEvents.emit('pagehide');
   normalStream.close(); halfStream.close(); await settle();
-  console.log('PASS: startup lifecycle, real inventory, voice/access barriers, persisted styles, measured portal-to-binding handoff, delayed body reveal, uninterrupted folio clocks, continuous transitions and reduced motion.');
+  console.log('PASS: startup lifecycle, real inventory, measured page writing/scroll exclusions, voice/access barriers, persisted styles, measured portal-to-binding handoff, delayed body reveal, uninterrupted folio clocks, continuous transitions and reduced motion.');
 }
 
 main().catch(error => { console.error(error); process.exitCode = 1; });

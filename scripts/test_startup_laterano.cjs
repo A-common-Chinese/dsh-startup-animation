@@ -16,7 +16,8 @@ assert.equal(phaseCount, 6);
 assert.ok(sandbox.window.DSHLateranoEmblem.parts.length >= 3, 'render the shipped emblem rather than a fixture');
 
 function recordingContext() {
-  const records = [], stack = [];
+  const records = [], stack = [], paintings = [];
+  let currentPath = [], clips = [];
   let matrix = [1, 0, 0, 1, 0, 0];
   const state = {
     globalAlpha: .73, globalCompositeOperation: 'source-over', fillStyle: '#123456', strokeStyle: '#654321',
@@ -32,8 +33,8 @@ function recordingContext() {
     finite(matrix);
   }
   const ctx = {
-    save() { stack.push({ state: { ...state }, matrix: [...matrix] }); },
-    restore() { assert.ok(stack.length, 'unmatched restore'); const saved = stack.pop(); Object.assign(state, saved.state); matrix = saved.matrix; },
+    save() { stack.push({ state: { ...state }, matrix: [...matrix], clips }); },
+    restore() { assert.ok(stack.length, 'unmatched restore'); const saved = stack.pop(); Object.assign(state, saved.state); matrix = saved.matrix; clips = saved.clips; },
     translate(x, y) { transform([1, 0, 0, 1, x, y]); },
     scale(x, y) { transform([x, 0, 0, y, 0, 0]); },
     rotate(angle) { finite([angle]); transform([Math.cos(angle), Math.sin(angle), -Math.sin(angle), Math.cos(angle), 0, 0]); },
@@ -43,7 +44,7 @@ function recordingContext() {
       const size = Number(state.font.match(/([\d.]+)px/)?.[1] || 12);
       return { width: [...String(value)].reduce((sum, char) => sum + size * (char.charCodeAt(0) > 255 ? 1 : .58), 0) };
     },
-    fillText(value, x, y) { finite([x, y]); record('fillText', [String(value), x, y]); },
+    fillText(value, x, y) { finite([x, y]); record('fillText', [String(value), x, y]); paintings.push({ ...records.at(-1), commands: [], clips }); },
   };
   for (const property of Object.keys(state).filter(key => key !== 'lineDash')) Object.defineProperty(ctx, property, {
     get: () => state[property],
@@ -58,11 +59,16 @@ function recordingContext() {
     finite(args.filter(value => typeof value === 'number'));
     if (op === 'arc') assert.ok(args[2] >= 0);
     record(op, args);
+    if (op === 'beginPath') currentPath = [];
+    else if (op === 'clip') clips = [...clips, { commands: [...currentPath], rule: args[0] || 'nonzero' }];
+    else if (['fill', 'stroke', 'fillRect'].includes(op)) paintings.push({ ...records.at(-1), commands: [...currentPath], clips });
+    else currentPath.push(records.at(-1));
   };
   return {
-    ctx, records,
+    ctx, records, paintings,
     finish() {
       assert.equal(stack.length, 0, 'saved canvas state leaked');
+      assert.equal(clips.length, 0, 'canvas clipping leaked');
       assert.deepEqual(matrix, [1, 0, 0, 1, 0, 0], 'transform leaked');
       assert.equal(JSON.stringify(state), initial, 'caller styles changed');
       return createHash('sha256').update(JSON.stringify(records)).digest('hex');
@@ -71,7 +77,7 @@ function recordingContext() {
 }
 function render(width, height, state) {
   const recorder = recordingContext(); draw(recorder.ctx, width, height, state);
-  return { hash: recorder.finish(), records: recorder.records };
+  return { hash: recorder.finish(), records: recorder.records, paintings: recorder.paintings };
 }
 function screenPoint(record, x = record.args[0], y = record.args[1]) {
   const [a, b, c, d, e, f] = record.matrix;
@@ -234,17 +240,60 @@ const leftSpring = circlePoint(arch[0], arch[0].args[3]), rightSpring = circlePo
 assert.ok(Math.abs((leftSpring[1] - apexLeft[1]) / (rightSpring[0] - leftSpring[0]) - Math.sqrt(3) / 2) < 1e-7,
   'portal proportions must follow the equal-circle construction');
 
-// Host headings may be offset, enlarged or wrapped independently of the card.
-// Their real rectangle is clipped in its entirety, rather than a guessed center.
+// Stage titles use glyph-local contrast, not a large rectangular hole in the
+// architecture. Their measured bounds still anchor capitals and the handoff.
 const heading = { x: 265, y: 153, width: 752, height: 128 };
+const identityPlate = { x: 408, y: 333, width: 464, height: 200 };
 for (const phase of [1, 2, 3, 4]) {
-  const { records } = render(1280, 720, { ...base, phase, progress: .48, layout: { heading } });
-  assert.ok(records.some(record => {
-    if (record.op !== 'rect') return false;
-    const from = screenPoint(record), to = screenPoint(record, record.args[0] + record.args[2], record.args[1] + record.args[3]);
-    return Math.abs(from[0] - (heading.x - 14 * .72)) < 1e-7 && Math.abs(from[1] - (heading.y - 14 * .72)) < 1e-7 &&
-      Math.abs(to[0] - (heading.x + heading.width + 14 * .72)) < 1e-7 && Math.abs(to[1] - (heading.y + heading.height + 14 * .72)) < 1e-7;
-  }), `phase ${phase} omitted measured heading exclusion`);
+  const sample = render(1280, 720, { ...base, phase, progress: 1, impulse: 0, reducedMotion: true,
+    layout: { heading, identity: identityPlate } });
+  assert.ok(sample.paintings.every(paint => ![0, 8 * .72, 14 * .72].some(padding => clipHole(paint, heading, padding))),
+    `phase ${phase} must keep the architecture continuous through the stage title bounds`);
+  if (phase === 2) {
+    const arches = sample.paintings.filter(paint => paint.op === 'stroke' && paint.lineWidth === 2.3 && paint.globalAlpha === .88);
+    const numerals = sample.paintings.filter(paint => paint.op === 'fillText' && paint.globalAlpha === .055 && parseFloat(paint.font.split(' ')[1]) > 500);
+    assert.ok(arches.length >= 2 && numerals.length === 3, 'the real pointed portal and III backdrop must still be painted');
+    assert.ok([...arches, ...numerals].every(paint => clipHole(paint, identityPlate, 14 * .72)),
+      'removing the stage-title hole must retain the measured password/identity plate exclusion');
+  }
+}
+const boundSource = render(1280, 720, { ...base, phase: 3, progress: 0, visualProgress: 0, impulse: 0,
+  bookAge: 0, bookOpen: 0, layout: { heading },
+  bookSource: { phase: 2, progress: 1, viewport: { width: 1280, height: 720 }, layout: { heading, identity: identityPlate } } });
+const sourceArches = boundSource.paintings.filter(paint => paint.op === 'stroke' && paint.lineWidth === 2.3 && paint.globalAlpha === .88);
+assert.ok(sourceArches.length >= 2);
+assert.ok(sourceArches.every(paint => clipHole(paint, identityPlate, 0) &&
+  ![0, 8 * .72, 14 * .72].some(padding => clipHole(paint, heading, padding))),
+  'the moving source arches must preserve identity protection without carrying a rectangular title hole into the book');
+
+// Once the title no longer cuts a rectangular hole in the background, small
+// foreground ornaments must be placed clear of its actual caption rectangle.
+for (const [width, height, book] of [
+  [1280, 720, { x: 210, y: 350, width: 860, height: 250, gutterX: 619,
+    left: { x: 210, y: 350, width: 398, height: 250 }, right: { x: 630, y: 350, width: 440, height: 250 } }],
+  [390, 844, { x: 24, y: 350, width: 342, height: 320, gutterX: 193,
+    left: { x: 24, y: 350, width: 163, height: 320 }, right: { x: 199, y: 350, width: 167, height: 320 } }],
+]) {
+  for (const gap of [60, 3]) {
+    const caption = { x: width * .18, y: book.y - gap - 95, width: width * .64, height: 95 };
+    const sample = render(width, height, { ...base, phase: 3, reducedMotion: true, impulse: 0,
+      layout: { book, inventory: book, heading: caption } });
+    const braids = sample.paintings.filter(paint => paint.op === 'stroke' && paint.globalAlpha === .74 && [1.45, 5].includes(paint.lineWidth));
+    if (gap === 60) {
+      assert.ok(braids.length > 0, 'a genuine caption-to-paper gap should retain the paired manuscript braids');
+      const points = braids.flatMap(pathSegments).flat();
+      assert.ok(points.every(point => point[1] > caption.y + caption.height + 6 && point[1] < book.y - 8),
+        'the complete braid silhouette must sit between the caption and paper, not across a title baseline');
+    } else assert.equal(braids.length, 0, 'a compact stage must omit the upper braid pair when its measured gap is too small');
+    const crest = sample.paintings.find(paint => paint.op === 'stroke' && paint.lineWidth === 1.1 && Math.abs(paint.globalAlpha - .576) < 1e-9);
+    assert.ok(crest, 'the smaller interlace must remain as the binding ornament');
+    assert.ok(Math.abs(crest.matrix[4] - book.gutterX) < 1e-7 && Math.abs(crest.matrix[5] - book.y) < 60,
+      'the completed interlace must dock on the measured spine instead of hovering beside the subtitle');
+    const crestInk = sample.paintings.filter(paint => Math.abs(paint.matrix[4] - crest.matrix[4]) < 1e-7 &&
+      Math.abs(paint.matrix[5] - crest.matrix[5]) < 1e-7);
+    assert.ok(crestInk.flatMap(pathSegments).flat().every(point => point[1] >= caption.y + caption.height + 5),
+      'the whole interlace silhouette, including its protruding plates, must clear the final subtitle');
+  }
 }
 
 // Botanical decoration must be actual curved cutwork with transparent veins.
@@ -424,4 +473,102 @@ for (const [width, height, book] of [
   const fallback = frame(0, { bookSource: null });
   assert.ok(mainArches(fallback.records).length, 'direct chapter entry must still construct a portal without a captured source');
 }
-console.log(`PASS: ${samples} Laterano frames, exact measured geometry, single upright iris, portal-to-spine continuity, staggered curved folio, truthful inventory and reduced motion. Peak: ${maxCommands}/12000.`);
+// Manuscript illumination uses actual writing bounds. Record the active canvas
+// clips on each paint so a pretty but ineffective exclusion cannot pass merely
+// by drawing an unused rectangle somewhere else in the frame.
+function clipHole(paint, box, padding = 6) {
+  return paint.clips.find(clip => clip.rule === 'evenodd' && clip.commands.filter(command => command.op === 'rect').length === 2 &&
+    clip.commands.some(command => {
+      if (command.op !== 'rect') return false;
+      const [x, y, w, h] = command.args, top = screenPoint(command, x, y), bottom = screenPoint(command, x + w, y + h);
+      return Math.abs(top[0] - box.x + padding) < 1e-7 && Math.abs(top[1] - box.y + padding) < 1e-7 &&
+        Math.abs(bottom[0] - box.x - box.width - padding) < 1e-7 && Math.abs(bottom[1] - box.y - box.height - padding) < 1e-7;
+    }));
+}
+const illuminatedPage = (x, y, width, height, compact) => {
+  const inset = compact ? 12 : 35, top = compact ? 25 : 44;
+  const heading = { x: x + inset, y: y + top, width: width - inset * 2, height: 44 };
+  const list = { x: x + inset, y: heading.y + heading.height + 12, width: width - inset * 2, height: height - top - 86 };
+  return { x, y, width, height, heading, list, occupiedBottom: list.y + 34, footerY: list.y + list.height };
+};
+for (const [width, height, left, right] of [
+  [1528, 900, illuminatedPage(280, 330, 476, 390, false), illuminatedPage(772, 330, 476, 390, false)],
+  [390, 844, illuminatedPage(24, 330, 171, 360, true), illuminatedPage(195, 330, 171, 360, true)],
+]) {
+  const unit = Math.min(width, height) / 1000;
+  const book = { x: left.x, y: left.y, width: right.x + right.width - left.x, height: left.height,
+    gutterX: (left.x + left.width + right.x) / 2, spread: true, left, right };
+  const state = { ...base, phase: 3, visualProgress: 1, progress: 1, bookAge: 3, bookOpen: 1, textAge: 3, impulse: 0,
+    layout: { book, inventory: book } };
+  const frame = changes => {
+    const sample = render(width, height, { ...state, ...changes });
+    maxCommands = Math.max(maxCommands, sample.records.length);
+    assert.ok(sample.records.length < 12000, 'manuscript illumination must remain within the canvas command budget');
+    return sample;
+  };
+  const ornaments = sample => sample.paintings.filter(paint => [left, right].some(page => clipHole(paint, page.heading)));
+  const sealRings = sample => sample.paintings.filter(paint => {
+    if (paint.op !== 'stroke' || paint.globalAlpha !== .67 || Math.abs(paint.lineWidth * unit - 1.05) >= 1e-7 ||
+      paint.commands.length !== 1 || paint.commands[0].op !== 'arc') return false;
+    const [x, y] = screenPoint(paint.commands[0]);
+    return x > book.x && x < book.x + book.width && y > book.y && y < book.y + book.height;
+  });
+  const completed = frame(), illumination = ornaments(completed);
+  assert.ok(illumination.length > 20, 'the completed pages must gain real ornamental paths inside the measured writing exclusions');
+  for (const paint of illumination) {
+    const page = clipHole(paint, left.heading) ? left : right;
+    const occupied = { ...page.list, height: page.occupiedBottom - page.list.y };
+    const headingClip = clipHole(paint, page.heading), writingClip = clipHole(paint, occupied);
+    assert.ok(writingClip && writingClip !== headingClip, 'each ornamental stroke needs independent heading and real text exclusions');
+    assert.ok(paint.clips.some(clip => clip.rule === 'nonzero' && clip.commands.filter(command => command.op === 'bezierCurveTo').length >= 3),
+      'illumination must remain inside the real bowed paper contour while the page unfolds');
+    assert.equal(paint.matrix[1], 0); assert.equal(paint.matrix[2], 0);
+  }
+  const rings = sealRings(completed);
+  assert.equal(rings.length, 8, 'both sparse pages must gain a composed four-part seal');
+  for (const ring of rings) {
+    const arc = ring.commands[0], center = screenPoint(arc), radius = arc.args[2] * unit;
+    const page = center[0] < book.gutterX ? left : right;
+    assert.ok(center[1] - radius > page.occupiedBottom + 6, 'seal crown must stay below the last real row');
+    assert.ok(center[1] + radius * 1.21 < page.footerY, 'seal and colophon must leave the actual footer clear');
+    assert.ok(center[0] - radius > page.list.x && center[0] + radius < page.list.x + page.list.width,
+      'seals must adapt to narrow page widths instead of being cropped into the spine');
+  }
+  const early = frame({ bookAge: 1.12 }), ruled = frame({ bookAge: 1.4 }), inscribed = frame({ bookAge: 1.8 });
+  assert.equal(ornaments(early).length, 0, 'illumination must wait for the physical leaves');
+  assert.ok(ornaments(ruled).length > 0, 'border tracery enters while the leaves are opening');
+  assert.equal(sealRings(ruled).length, 0, 'page seals follow the earlier border layer');
+  if (left.width >= 210) {
+    const headerCopy = sample => ornaments(sample).filter(paint => paint.op === 'fillText').map(paint => paint.args[0]).join('');
+    assert.equal(headerCopy(ruled), '', 'running heads must follow the earlier border layer');
+    assert.match(headerCopy(frame({ bookAge: 1.6 })), /CONCORD \/ ICONCORD \/ II/, 'running heads must start engraving before the seals');
+  }
+  assert.equal(sealRings(inscribed).length, 8, 'seal construction begins after the border and running head');
+  const earlySweep = sealRings(inscribed)[0].commands[0].args;
+  const fullSweep = rings[0].commands[0].args;
+  assert.ok(earlySweep[4] - earlySweep[3] < fullSweep[4] - fullSweep[3], 'seals must be drawn progressively, not merely faded in as complete rings');
+  assert.deepEqual(ornaments(frame({ phase: 4 })), illumination, 'result registration must carry the same page illumination without rebuilding it');
+  assert.equal(frame({ reducedMotion: true, bookAge: 0, ambientTime: 0 }).hash,
+    frame({ reducedMotion: true, bookAge: 100, ambientTime: 100 }).hash, 'reduced motion must use the final readable illumination pose');
+
+  for (const occupancy of ['overflow', 'unknown', 'wrapped']) {
+    const adjusted = Object.fromEntries(['left', 'right'].map(side => {
+      const page = book[side];
+      return [side, { ...page, occupiedBottom: occupancy === 'unknown' ? NaN : page.list.y + page.list.height - (occupancy === 'wrapped' ? 12 : 0) }];
+    }));
+    assert.equal(sealRings(frame({ layout: { book: { ...book, ...adjusted }, inventory: book } })).length, 0,
+      `${occupancy} text bounds must remove the seal rather than spend real list space on decoration`);
+  }
+  const missing = { ...book, left: { ...left, heading: null }, right: { ...right, list: null } };
+  assert.equal(sealRings(frame({ layout: { book: missing, inventory: book } })).length, 0,
+    'unmeasured writing must never receive a guessed decorative seal');
+  // Heading and list can overlap under aggressive text zoom. Their holes must
+  // intersect as exclusions instead of cancelling through even-odd winding.
+  const enlarged = { ...left, heading: { ...left.heading, height: left.heading.height + 45 } };
+  const overlap = frame({ layout: { book: { ...book, left: enlarged }, inventory: book } });
+  const overlapInk = overlap.paintings.filter(paint => clipHole(paint, enlarged.heading));
+  assert.ok(overlapInk.length > 0);
+  assert.ok(overlapInk.every(paint => clipHole(paint, { ...left.list, height: left.occupiedBottom - left.list.y })),
+    'overlapping title/body exclusions must both remain active on the same ornamental strokes');
+}
+console.log(`PASS: ${samples} Laterano frames, measured writing exclusions, layered manuscript illumination, single upright iris, portal-to-spine continuity, staggered curved folio, truthful inventory and reduced motion. Peak: ${maxCommands}/12000.`);

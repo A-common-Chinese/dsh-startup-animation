@@ -79,8 +79,9 @@
     const sourceIdentity = sourceMeasured(state.bookSource?.layout?.identity);
     const sourceHeading = sourceMeasured(state.bookSource?.layout?.heading);
     const coverInk = light ? '#183459' : '#294974';
-    // Measured cards and headings are authoritative. The secondary corridor is
-    // only a fallback for standalone renderers without DOM measurements.
+    // Measured cards and headings are authoritative geometry anchors. Stage
+    // headings do not punch rectangular holes in the architecture behind them;
+    // only real identity / inventory writing owns an exclusion rectangle.
     const headingBox = measured(state.layout?.heading) || (phase === 1 ? { left: -W * .34, right: W * .34, top: atY(.29), bottom: atY(.47) } :
       phase === 2 ? { left: -W * .36, right: W * .36, top: atY(.17), bottom: Math.min(identityBox?.top ?? atY(.43), atY(.44)) } :
       { left: -W * .35, right: W * .35, top: atY(.17), bottom: atY(.32) });
@@ -531,7 +532,7 @@
       }
     }
     function linkScene() {
-      outside([headingBox], () => {
+      outside([], () => {
         floralMargins(1);
         page('II', .065);
         const y = atY(.595), anchor = Math.min(W * .32, 440), center = parallax.x * .35;
@@ -557,7 +558,7 @@
       const box = identityBox || { left: -W * .24, right: W * .24, top: atY(.43), bottom: atY(.72), rows: [] };
       const x = (box.left + box.right) / 2, half = Math.min(W * .39, (box.right - box.left) / 2 + 68);
       const spring = box.top + 55, base = box.bottom + 28;
-      outside([box, headingBox], () => {
+      outside([box], () => {
         floralMargins(2);
         page('III', .055);
         const construction = smooth(section(progress, 0, .27));
@@ -660,7 +661,7 @@
         const scale = Math.pow(1 - gather, 2), hw = (box.right - box.left) * .5 * scale, hh = (box.bottom - box.top) * .5 * scale;
         return { left: cx - hw, right: cx + hw, top: cy - hh, bottom: cy + hh };
       };
-      outside([movingHole(sourceIdentity), movingHole(sourceHeading)], () => {
+      outside([movingHole(sourceIdentity)], () => {
         for (let inset = 0; inset < 3; inset++) {
           const radius = half + inset * 14;
           const sourceAmount = smooth(section(srcProgress, .19 + inset * .04, .70 + inset * .035));
@@ -741,8 +742,12 @@
           diamond(p[0], p[1], lerp(45 * .29, 6, gather), accent, .88 * centreInk, false);
           diamond(p[0], p[1], lerp(45 * .12, 2.5, gather), color.ink, .88 * centreInk);
         }
-        const crestX = lerp(x, folio.center, gather), crestY = lerp(spring - ROOT3 * half + 55, folio.top - 36, gather);
-        interlace(crestX, crestY, lerp(65, wide ? 26 : 19, gather), lerp(section(srcProgress, .08, .84), 1, gather), .80, Math.PI / 8);
+        const dockRadius = wide ? 14 : 12;
+        // The interlace plates extend beyond its circular radius. Dock their
+        // full silhouette below the caption, at the mouth of the binding.
+        const dockY = Math.max(folio.top - 14, headingBox.bottom + dockRadius * .78 + 17 + 6 / unit);
+        const crestX = lerp(x, folio.center, gather), crestY = lerp(spring - ROOT3 * half + 55, dockY, gather);
+        interlace(crestX, crestY, lerp(65, dockRadius, gather), lerp(section(srcProgress, .08, .84), 1, gather), .80, Math.PI / 8);
       }, 0);
     }
     function paperContour(folio, leaf, side, open, offset = 0, cover = false) {
@@ -771,6 +776,147 @@
           ctx.fillStyle = coverInk; ctx.fill(); ctx.strokeStyle = coverInk; ctx.lineWidth = 1.4; ctx.stroke();
         }
       }
+    }
+    function pageWriting(leaf, index) {
+      const source = state.layout?.book?.[index ? 'right' : 'left'];
+      const heading = measured(source?.heading), list = measured(source?.list);
+      // The scroll viewport often fills most of the leaf even when it holds a
+      // single real row. Only the occupied portion is reserved for writing;
+      // an overflowing list is reported by the host as completely occupied.
+      const end = list && Number.isFinite(source?.occupiedBottom) ?
+        clamp((source.occupiedBottom - height / 2) / unit, list.top, list.bottom) : list?.bottom;
+      const occupied = list && end > list.top ? { ...list, bottom: end } : null;
+      const footer = Number.isFinite(source?.footerY) ? (source.footerY - height / 2) / unit : leaf.bottom;
+      return { heading, list, occupied, end, footer };
+    }
+    function manuscriptSeal(x, y, radius, index, amount) {
+      if (amount <= 0) return;
+      const ring = smooth(section(amount, 0, .40));
+      const figure = smooth(section(amount, .16, .76));
+      const lock = smooth(section(amount, .61, 1));
+      // Split rings are engraved in four strokes. The page-specific figures
+      // are composed inside them, never pasted in as an opacity transition.
+      for (let quarter = 0; quarter < 4; quarter++) {
+        const a = quarter * TAU / 4 - Math.PI / 2 + .06;
+        arc(x, y, radius, a, a + (Math.PI / 2 - .12) * ring, color.ink, .67, 1.05 / unit);
+        arc(x, y, radius * .92, a, a + (Math.PI / 2 - .12) * ring, accent, .74, .65 / unit);
+      }
+      if (index === 0) {
+        // Six equal circles form a rose window. The central rosette remains
+        // architectural, leaving the single large iris as the floral mark.
+        for (let petal = 0; petal < 6; petal++) {
+          const a = petal * TAU / 6 - Math.PI / 2;
+          const q = smooth(section(amount, .16 + petal * .027, .62 + petal * .032));
+          const cx = x + Math.cos(a) * radius * .33, cy = y + Math.sin(a) * radius * .33;
+          arc(cx, cy, radius * .33, a + Math.PI, a + Math.PI + TAU * q, accent, .76, .9 / unit);
+          trace([[x + Math.cos(a) * radius * .70, y + Math.sin(a) * radius * .70],
+            [x + Math.cos(a) * radius * .83, y + Math.sin(a) * radius * .83]], figure, color.ink, .75, 1.05 / unit);
+        }
+        arc(x, y, radius * .68, -Math.PI / 2, -Math.PI / 2 + TAU * figure, color.line, .92, .65 / unit);
+        trace([[x - radius * .16, y], [x + radius * .16, y]], lock, color.ink, .86, 1.35 / unit);
+        trace([[x, y - radius * .16], [x, y + radius * .16]], lock, color.ink, .86, 1.35 / unit);
+      } else {
+        // The facing leaf uses an eight-point woven compass surrounding an
+        // almond intersection. Its silhouette deliberately differs from I.
+        for (let weave = 0; weave < 2; weave++) {
+          const points = Array.from({ length: 5 }, (_, point) => {
+            const a = point * TAU / 4 + weave * Math.PI / 4;
+            return [x + Math.cos(a) * radius * .76, y + Math.sin(a) * radius * .76];
+          });
+          trace(points, smooth(section(amount, .15 + weave * .10, .61 + weave * .12)),
+            weave ? color.ink : accent, weave ? .72 : .83, (weave ? 1.25 : .85) / unit);
+        }
+        const lens = smooth(section(amount, .32, .86)), r = radius * .43;
+        arc(x - r / 2, y, r, -Math.PI / 3, -Math.PI / 3 + Math.PI * 2 / 3 * lens, accent, .85, 1 / unit);
+        arc(x + r / 2, y, r, Math.PI * 2 / 3, Math.PI * 2 / 3 + Math.PI * 2 / 3 * lens, accent, .85, 1 / unit);
+        trace([[x, y - radius * .53], [x, y + radius * .53]], lock, color.ink, .59, .7 / unit);
+      }
+      for (let point = 0; point < 8; point++) {
+        const a = point * TAU / 8 - Math.PI / 2;
+        const r = radius * (point % 2 ? 1 : 1.035);
+        const q = smooth(section(amount, .53 + point * .02, .84 + point * .02));
+        const xx = x + Math.cos(a) * r, yy = y + Math.sin(a) * r;
+        const size = radius * (point % 2 ? .021 : .038) * q;
+        if (size > 0) diamond(xx, yy, size, point % 2 ? accent : color.ink, .85);
+      }
+      diamond(x, y, radius * .058 * lock, accent, .9, false);
+      // A pair of short colophon rules gives the circular mark a manuscript
+      // baseline while keeping every part within its measured free rectangle.
+      for (const side of [-1, 1]) {
+        trace([[x + side * radius * .27, y + radius * 1.17],
+          [x + side * radius * .71, y + radius * 1.17]], lock, accent, .78, .7 / unit);
+      }
+      diamond(x, y + radius * 1.17, radius * .028 * lock, color.ink, .78);
+    }
+    function folioIllumination(folio, leaf, index) {
+      const writing = pageWriting(leaf, index), side = index ? 1 : -1;
+      const widthPx = (leaf.right - leaf.left) * unit;
+      const edge = index ? leaf.right : leaf.left, center = (leaf.left + leaf.right) / 2;
+      const delay = index * .045;
+      const border = smooth(section(bookAge, 1.15 + delay, 1.65 + delay));
+      const header = smooth(section(bookAge, 1.45 + delay, 1.95 + delay));
+      const seal = smooth(section(bookAge, 1.65 + delay, 2.45 + delay));
+      if (border <= 0) return;
+      // All illumination shares two hard, independently clipped writing
+      // exclusions. Overlapping rectangles must never cancel each other out.
+      outside([writing.heading, writing.occupied], () => {
+        const railInset = (widthPx < 220 ? 3.5 : 12) / unit;
+        const railWidth = (widthPx < 220 ? 2 : 6) / unit;
+        const railX = edge - side * railInset;
+        const railTop = leaf.top + 30 / unit, railBottom = leaf.bottom - 31 / unit;
+        if (railBottom > railTop) {
+          trace([[railX, railTop], [railX, railBottom]], border, accent, .77, .65 / unit);
+          const knotCount = Math.max(2, Math.min(7, Math.floor((railBottom - railTop) * unit / 34)));
+          for (let knot = 0; knot < knotCount; knot++) {
+            const yy = lerp(railTop + 9 / unit, railBottom - 9 / unit, (knot + .5) / knotCount);
+            const q = smooth(section(bookAge, 1.19 + knot * .035 + delay, 1.55 + knot * .035 + delay));
+            const span = 7 / unit;
+            trace([[railX, yy - span], [railX - side * railWidth, yy],
+              [railX, yy + span], [railX + side * railWidth, yy], [railX, yy - span]],
+              q, knot % 2 ? color.ink : accent, .79, .75 / unit);
+            trace([[railX - side * railWidth, yy - span * 1.25], [railX + side * railWidth, yy - span * .55]],
+              q, color.line, .84, .65 / unit);
+          }
+        }
+        // Running heads use only the measured top padding. At compact and
+        // short viewports there may only be room for an engraved headpiece.
+        const headRoom = writing.heading ? (writing.heading.top - leaf.top) * unit : 0;
+        if (headRoom >= 28 && widthPx >= 210 && header > 0) {
+          const y = leaf.top + Math.min(21, headRoom - 13) / unit;
+          const extent = Math.min(widthPx * .35, 154) / unit;
+          const labelHalf = 45 / unit;
+          for (const direction of [-1, 1]) {
+            trace([[center + direction * labelHalf, y], [center + direction * extent, y]],
+              header, accent, .72, .7 / unit);
+            const xx = center + direction * (extent + 4 / unit);
+            trace([[xx - 3 / unit, y + 3 / unit], [xx, y - 3 / unit], [xx + 3 / unit, y + 3 / unit]],
+              header, color.ink, .85, .8 / unit);
+          }
+          ctx.save(); ctx.beginPath();
+          ctx.rect(center - labelHalf, y - 6 / unit, labelHalf * 2 * header, 12 / unit); ctx.clip();
+          type(index ? 'CONCORD / II' : 'CONCORD / I', center, y, 7.7 / unit, color.soft, .93,
+            .95 / unit, 'center', true); ctx.restore();
+        } else if (headRoom >= 18 && header > 0) {
+          const yy = leaf.top + 6 / unit, extent = Math.min(21, widthPx * .13) / unit;
+          for (const direction of [-1, 1]) {
+            trace([[center, yy], [center + direction * extent, yy]], header, accent, .75, .7 / unit);
+          }
+          trace([[center - 3 / unit, yy], [center, yy - 3 / unit], [center + 3 / unit, yy],
+            [center, yy + 3 / unit], [center - 3 / unit, yy]], header, color.ink, .85, .8 / unit);
+        }
+        if (!writing.heading || !writing.list || !Number.isFinite(writing.end) || seal <= 0) return;
+        const blankTop = Math.max(writing.end, writing.heading.bottom) + 14 / unit;
+        const blankBottom = Math.min(writing.footer - 10 / unit, leaf.bottom - 30 / unit);
+        const blankLeft = Math.max(leaf.left + 25 / unit, writing.list.left);
+        const blankRight = Math.min(leaf.right - 25 / unit, writing.list.right);
+        // Never reserve space away from data: a long inventory gets the full
+        // page. The seal simply vanishes when there is no genuine lower gap.
+        const radius = Math.min(78 / unit, (blankRight - blankLeft) * .34, (blankBottom - blankTop) / 2.22);
+        if (radius * unit < 23) return;
+        const sealX = (blankLeft + blankRight) / 2;
+        const sealY = (blankTop + blankBottom - radius * .17) / 2;
+        manuscriptSeal(sealX, sealY, radius, index, seal);
+      }, 6 / unit);
     }
     function codexLeaves(folio) {
       const { center, top, bottom, leaves } = folio;
@@ -806,6 +952,7 @@
           const movingEdge = lerp(center, edge, opening);
           line(movingEdge, yy, movingEdge - side * 3.5, yy - 2, accent, .62, .65);
         }
+        folioIllumination(folio, leaf, index);
         ctx.restore();
         type(index ? 'II' : 'I', (leaf.left + leaf.right) / 2, leaf.bottom + 27,
           12, color.ink, bookOpen, 1.5, 'center', true);
@@ -824,24 +971,31 @@
       const box = bookBox || inventoryBox || { left: -W * .37, right: W * .37, top: atY(.38), bottom: atY(.80) };
       const exclusion = inventoryBox || box;
       const folio = folioGeometry(box);
-      outside([exclusion, headingBox], () => {
+      outside([exclusion], () => {
         // The open folio is carried intact from discovery into registration.
         // Both phases share the same locations and the persistent book clock.
         floralMargins(3, 1);
         page('IV', .045);
-        const crestY = Math.min(atY(.25), box.top - 53);
         const crestX = bookBox ? bookGutter : (box.left + box.right) / 2;
         const railWidth = Math.min(W * .24, 280);
-        for (const side of [-1, 1]) {
-          const left = side < 0 ? crestX - railWidth - 114 : crestX + 114;
-          braid(left, crestY + 9, railWidth, bookBuild, .74);
+        // A running braid belongs in the space between caption and paper,
+        // never across a title baseline. Compact stages omit this pair when
+        // the measured gap cannot hold the full 26-unit engraved silhouette.
+        const braidTop = headingBox.bottom + 8 / unit + 13;
+        const braidBottom = folio.top - 38;
+        if (braidBottom >= braidTop) {
+          const braidY = (braidTop + braidBottom) / 2;
+          for (const side of [-1, 1]) {
+            const left = side < 0 ? crestX - railWidth - 114 : crestX + 114;
+            braid(left, braidY, railWidth, bookBuild, .74);
+          }
         }
         archiveRoutes(exclusion, complete);
       });
       // The source ink lands on the unfolding cover, then the paper travels
       // over its interior. Endbands and the outer engraved rims stay visible.
       codexCovers(folio);
-      outside([headingBox], () => folioConstruction(folio), 8);
+      folioConstruction(folio);
       codexLeaves(folio);
       if (complete) {
         const arrival = reduced ? 1 : smooth(section(progress, .12, .75));
@@ -892,7 +1046,7 @@
       ctx.fillStyle = color.paper; ctx.fillRect(0, 0, width, height);
       ctx.translate(width / 2, height / 2); ctx.scale(unit, unit);
       [sealScene, linkScene, identityScene, () => archiveScene(false), () => archiveScene(true), readyScene][phase]();
-      const exclusion = phase === 2 ? [identityBox, headingBox] : phase === 3 || phase === 4 ? [inventoryBox, headingBox] : phase === 1 ? [headingBox] : [];
+      const exclusion = phase === 2 ? [identityBox] : phase === 3 || phase === 4 ? [inventoryBox] : [];
       outside(exclusion, interaction);
     } finally { ctx.restore(); }
   }

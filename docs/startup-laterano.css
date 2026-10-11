@@ -11,6 +11,11 @@
 [data-visual-style=laterano] h1{font-family:"Noto Serif SC","Source Han Serif SC","SimSun","Songti SC",serif;font-weight:400;letter-spacing:.22em;text-indent:.22em}
 [data-visual-style=laterano] .phase-kicker{color:var(--accent);letter-spacing:.3em}
 [data-visual-style=laterano] .phase-note{font-weight:400;letter-spacing:.17em}
+/* Only the glyph edge receives contrast; the architectural background stays
+   continuous through the headline's otherwise transparent layout box. */
+[data-visual-style=laterano]{--scene-paper:#f6f7f6}
+[data-visual-style=laterano][data-theme=dark]{--scene-paper:#0c1424}
+[data-visual-style=laterano] :is(#phaseEnglish,#phaseTitle,#phaseNote) .dsh-text-ink{text-shadow:-1px -1px 0 var(--scene-paper),0 -1px 0 var(--scene-paper),1px -1px 0 var(--scene-paper),-1px 0 0 var(--scene-paper),1px 0 0 var(--scene-paper),-1px 1px 0 var(--scene-paper),0 1px 0 var(--scene-paper),1px 1px 0 var(--scene-paper)}
 [data-visual-style=laterano] .brand b{font-family:Georgia,"Times New Roman",serif;font-weight:400;letter-spacing:2px;font-size:31px}
 [data-visual-style=laterano] .brand-bottom em{background:var(--accent);color:var(--bg)}
 [data-visual-style=laterano] .identity-card{border-top:1px solid var(--accent);background:var(--panel)}

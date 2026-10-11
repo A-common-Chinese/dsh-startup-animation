@@ -136,7 +136,16 @@ function measureSceneLayout(){
   book:null
  };layoutDirty=false;
  if(visualStyle==='laterano'&&!ui.inventoryPanel.hidden){
-  const left=rect($('skillsPage')),right=rect($('pluginsPage'));
+  const leaf=(page,heading,list)=>{
+   const listBox=rect(list),end=listBox.y+listBox.height;
+   // Stable row boxes include names and source lines. Empty/loading messages
+   // live in their own measured ink span rather than filling the flex column.
+   const content=[...list.children].map(rect).filter(box=>box.width>0&&box.height>0);
+   const overflowing=list.scrollHeight>list.clientHeight+1;
+   const occupiedBottom=overflowing||!content.length?end:Math.max(listBox.y,Math.min(end,Math.max(...content.map(box=>box.y+box.height))));
+   return {...rect(page),heading:rect(heading),list:listBox,occupiedBottom,footerY:end};
+  };
+  const left=leaf($('skillsPage'),$('skillsHeading'),ui.skillsList),right=leaf($('pluginsPage'),$('pluginsHeading'),ui.pluginsList);
   sceneLayout.book={...rect($('inventoryBook')),gutterX:(left.x+left.width+right.x)/2,spread:true,left,right};
  }
 }
@@ -410,6 +419,8 @@ ui.saveIdentity.addEventListener('click',async()=>{const revision=draftRevision;
 ui.connectLocal.addEventListener('click',async()=>{const connected=await local.connect(true);if(connected&&sequence.phase===3&&!sequence.completed){local.cancelLoad();beginLocalLoad();}renderLocal();refresh();});
 new ResizeObserver(resize).observe(pane);window.addEventListener('resize',resize);
 const geometryObserver=new ResizeObserver(()=>{layoutDirty=true;refresh();});geometryObserver.observe($('stageCopy'));geometryObserver.observe(ui.identityCard);geometryObserver.observe(ui.inventoryPanel);geometryObserver.observe($('inventoryBook'));inventoryColumns.forEach(node=>geometryObserver.observe(node));
+for(const node of [$('skillsHeading'),$('pluginsHeading'),ui.skillsList,ui.pluginsList])geometryObserver.observe(node);
+for(const list of [ui.skillsList,ui.pluginsList])list.addEventListener('scroll',()=>{layoutDirty=true;refresh();},{passive:true});
 document.fonts?.ready.then(()=>{layoutDirty=true;refresh();});
  window.addEventListener('pagehide',()=>{generation++;starting=false;sequence.pause();manualPause=true;clearTransition();stopAudio();cancelVoice();local.dispose();cancelAnimationFrame(raf);raf=0;if(audio&&audio.state!=='closed')audio.close();});
 window.addEventListener('pageshow',event=>{if(event.persisted){lastFrame=performance.now();void local.connect(true);refresh();announce('预览已恢复。点按画面继续演出。');}});
