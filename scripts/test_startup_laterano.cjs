@@ -54,7 +54,7 @@ function recordingContext() {
       state[property] = value;
     },
   });
-  for (const op of ['beginPath', 'closePath', 'clip', 'fill', 'stroke', 'moveTo', 'lineTo', 'arc', 'rect', 'fillRect']) ctx[op] = (...args) => {
+  for (const op of ['beginPath', 'closePath', 'clip', 'fill', 'stroke', 'moveTo', 'lineTo', 'bezierCurveTo', 'arc', 'rect', 'fillRect']) ctx[op] = (...args) => {
     finite(args.filter(value => typeof value === 'number'));
     if (op === 'arc') assert.ok(args[2] >= 0);
     record(op, args);
@@ -194,4 +194,55 @@ for (const phase of [1, 2, 3, 4]) {
       Math.abs(to[0] - (heading.x + heading.width + 14 * .72)) < 1e-7 && Math.abs(to[1] - (heading.y + heading.height + 14 * .72)) < 1e-7;
   }), `phase ${phase} omitted measured heading exclusion`);
 }
-console.log(`PASS: ${samples} Laterano frames, exact card/heading geometry, true pointed arches, still settled poses, truthful inventory and reduced motion. Peak: ${maxCommands}/12000.`);
+
+// Botanical decoration must be actual curved cutwork with transparent veins.
+// Straight emblem contours and a font glyph are deliberately insufficient.
+function curvedCutwork(records) {
+  let curves = 0, contours = 0;
+  const cutouts = [];
+  for (const record of records) {
+    if (record.op === 'beginPath') { curves = 0; contours = 0; }
+    if (record.op === 'bezierCurveTo') curves++;
+    if (record.op === 'moveTo') contours++;
+    if (record.op === 'fill' && record.args[0] === 'evenodd' && curves >= 4 && contours >= 2)
+      cutouts.push({ curves, contours, alpha: record.globalAlpha });
+  }
+  return cutouts;
+}
+for (const [width, height] of [[1920, 1080], [390, 844]]) {
+  for (let phase = 0; phase < phaseCount; phase++) {
+    const frame = render(width, height, { ...base, phase, reducedMotion: true, impulse: 0 });
+    const motifs = curvedCutwork(frame.records);
+    assert.ok(motifs.length >= 6, `phase ${phase} must retain iris petals and patterned cutouts at ${width}px`);
+    assert.ok(motifs.some(motif => motif.alpha > .85), 'floral anchors must retain visible ink mass, not only faint outlines');
+  }
+}
+const unfolded = progress => render(1280, 720, { ...base, phase: 0, progress, textAge: 3, impulse: 0 }).records;
+const early = curvedCutwork(unfolded(.10)), late = curvedCutwork(unfolded(.78));
+assert.ok(late.length > early.length + 4, 'botanical plates and patterned panels must enter in separate delayed groups');
+assert.notEqual(render(1280, 720, { ...base, phase: 0, progress: .45, textAge: 3, impulse: 0 }).hash,
+  render(1280, 720, { ...base, phase: 0, progress: .78, textAge: 3, impulse: 0 }).hash,
+  'the middle movement must unfold and reassemble rather than instantly reveal the whole design');
+for (const phase of [0, 1, 5]) {
+  const { records } = render(1280, 720, { ...base, phase, reducedMotion: true, impulse: 0 });
+  const shield = records.findIndex((record, index) => record.op === 'arc' && record.args[0] === 0 && record.args[1] === -5 && record.args[2] === 102 &&
+    records[index + 1]?.op === 'fill' && records[index + 1]?.fillStyle === '#f6f7f6' && records[index + 1]?.globalAlpha === 1);
+  assert.ok(shield >= 0, `phase ${phase} must clear construction lines behind the DSH seal`);
+  assert.ok(records.slice(shield + 1).some(record => record.op === 'fill' && record.args[0] === 'evenodd'),
+    'seal ink must be laid down after its clean medallion');
+}
+for (const [width, height, card, title] of [
+  [1528, 732, { x: 573, y: 333, width: 383, height: 223 }, { x: 414, y: 181, width: 700, height: 122 }],
+  [390, 844, { x: 43, y: 351, width: 304, height: 252 }, { x: 19, y: 173, width: 352, height: 150 }],
+]) {
+  const unit = Math.min(width, height) / 1000;
+  for (const progress of [.4, 1]) {
+    const { records } = render(width, height, { ...base, phase: 2, progress, impulse: 0, textAge: 3, layout: { heading: title, identity: card } });
+    const capitals = records.filter(record => record.op === 'moveTo' && record.args[0] === 0 && record.args[1] === -95 &&
+      Math.abs(record.matrix[3] - .60 * unit) < 1e-7);
+    assert.equal(capitals.length, 2, 'measure both actual curved capital petals');
+    for (const capital of capitals) assert.ok(screenPoint(capital)[1] > title.y + title.height + 14 * unit,
+      'the iris capital must sit below the full measured heading exclusion, including while it unfolds');
+  }
+}
+console.log(`PASS: ${samples} Laterano frames, exact card/heading geometry, true arches, curved iris cutwork, staged layers, still holds, truthful inventory and reduced motion. Peak: ${maxCommands}/12000.`);

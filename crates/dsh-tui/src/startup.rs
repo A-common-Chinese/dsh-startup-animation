@@ -46,6 +46,22 @@ const SUBTITLES: [&str; 6] = [
     "STARTUP INVENTORY READY",
     "WELCOME TO DSH",
 ];
+const LATERANO_TITLES: [&str; 6] = [
+    "等圆定基",
+    "鸢尾展开",
+    "玫瑰窗构造",
+    "拱门展开",
+    "登记归序",
+    "印记归一",
+];
+const LATERANO_SUBTITLES: [&str; 6] = [
+    "EQUAL CIRCLES / DSH",
+    "IRIS / WORKSPACE CONTEXT",
+    "ROSE / OPERATOR PROFILE",
+    "ARCH / LOADED CONTEXT",
+    "REGISTER / CAPABILITIES",
+    "CONCORD / READY",
+];
 
 /// Immutable data captured before playback. An absent inventory is deliberately
 /// distinct from a successfully loaded, empty inventory.
@@ -419,9 +435,7 @@ fn decoded_profile(value: &str, columns: usize, age: f64, row: usize, still: boo
     let mut output = String::new();
     for (index, character) in value.chars().enumerate() {
         let width = Line::from(character.to_string()).width();
-        if character.is_whitespace()
-            || width == 0
-            || progress >= (index + 1) as f64 / count as f64
+        if character.is_whitespace() || width == 0 || progress >= (index + 1) as f64 / count as f64
         {
             output.push(character);
         } else {
@@ -439,6 +453,13 @@ fn decoded_profile(value: &str, columns: usize, age: f64, row: usize, still: boo
 }
 
 fn scene_title(phase: usize, context: &StartupContext) -> &'static str {
+    if context.profile.visual_style == VisualStyle::Laterano {
+        return if phase == 4 && !context.inventory_loaded {
+            "本机清单未接入"
+        } else {
+            LATERANO_TITLES[phase]
+        };
+    }
     if matches!(phase, 3 | 4) && !context.inventory_loaded {
         "本机清单未接入"
     } else {
@@ -447,6 +468,16 @@ fn scene_title(phase: usize, context: &StartupContext) -> &'static str {
 }
 
 fn scene_subtitle(phase: usize, context: &StartupContext) -> &'static str {
+    if context.profile.visual_style == VisualStyle::Laterano {
+        if phase == 3 && !context.inventory_loaded {
+            return "ARCH / CONTEXT UNAVAILABLE";
+        }
+        return if phase == 4 && !context.inventory_loaded {
+            "INVENTORY UNAVAILABLE"
+        } else {
+            LATERANO_SUBTITLES[phase]
+        };
+    }
     if matches!(phase, 3 | 4) && !context.inventory_loaded {
         "INVENTORY UNAVAILABLE"
     } else if phase == 3 {
@@ -579,6 +610,11 @@ fn draw(
         return;
     }
     let phase = seq.phase.min(5);
+    let inventory_phase = if context.profile.visual_style == VisualStyle::Laterano {
+        4
+    } else {
+        3
+    };
     let inner = Rect::new(
         area.x + 2,
         area.y,
@@ -612,7 +648,7 @@ fn draw(
             p.accent(),
             true,
         );
-        if phase == 3 && area.height >= 12 {
+        if phase == inventory_phase && area.height >= 12 {
             row(frame, inner, 6, inventory_summary(context), p.text(), true);
         }
         row(
@@ -655,7 +691,11 @@ fn draw(
         format!(
             "FOCUS 0{}  /  {}",
             seq.focus + 1,
-            ["SIGNAL", "IDENTITY", "READOUT"][seq.focus]
+            if context.profile.visual_style == VisualStyle::Laterano {
+                ["AXIS", "IRIS", "ROSE"][seq.focus]
+            } else {
+                ["SIGNAL", "IDENTITY", "READOUT"][seq.focus]
+            }
         ),
         p.text().fg(p.dim),
         false,
@@ -667,7 +707,7 @@ fn draw(
         area.height.saturating_sub(7),
     );
     draw_cinematic(frame, graphic, seq, config.reduced_motion, p, context);
-    if phase == 3 {
+    if phase == inventory_phase {
         draw_inventory(frame, graphic, context, p);
     }
 
@@ -798,12 +838,14 @@ fn badge_parts(visual_style: VisualStyle) -> &'static [Vec<(f64, f64)>; 5] {
     static LATERANO_PARTS: OnceLock<[Vec<(f64, f64)>; 5]> = OnceLock::new();
     let (parts, source) = match visual_style {
         VisualStyle::Rhine => (&RHINE_PARTS, include_str!("../assets/dsh-emblem.json")),
-        VisualStyle::Laterano => (&LATERANO_PARTS, include_str!("../assets/dsh-laterano-emblem.json")),
+        VisualStyle::Laterano => (
+            &LATERANO_PARTS,
+            include_str!("../assets/dsh-laterano-emblem.json"),
+        ),
     };
     parts.get_or_init(|| {
         let definition: serde_json::Value =
-            serde_json::from_str(source)
-                .expect("embedded startup geometry must be valid JSON");
+            serde_json::from_str(source).expect("embedded startup geometry must be valid JSON");
         let contours: [Vec<Vec<(f64, f64)>>; 5] =
             serde_json::from_value(definition["parts"].clone())
                 .expect("embedded startup geometry must contain five contour groups");
@@ -826,7 +868,12 @@ fn badge_parts(visual_style: VisualStyle) -> &'static [Vec<(f64, f64)>; 5] {
     })
 }
 
-fn transformed_badge(visual_style: VisualStyle, center: (f64, f64), scale: f64, separation: f64) -> [Vec<(f64, f64)>; 5] {
+fn transformed_badge(
+    visual_style: VisualStyle,
+    center: (f64, f64),
+    scale: f64,
+    separation: f64,
+) -> [Vec<(f64, f64)>; 5] {
     std::array::from_fn(|part| {
         let direction = if part == 0 || part == 2 || part == 4 {
             -1.0
@@ -851,6 +898,484 @@ fn transformed_badge(visual_style: VisualStyle, center: (f64, f64), scale: f64, 
     })
 }
 
+// Construction geometry is emitted as bounded line segments. There are no
+// per-frame path allocations, rotating particle fields or terminal-aspect guesses.
+fn construction_line(
+    emit: &mut impl FnMut((f64, f64), (f64, f64), u8),
+    from: (f64, f64),
+    to: (f64, f64),
+    reveal: f64,
+    ink: u8,
+) {
+    let reveal = reveal.clamp(0.0, 1.0);
+    if reveal > 0.0 {
+        emit(
+            from,
+            (
+                from.0 + (to.0 - from.0) * reveal,
+                from.1 + (to.1 - from.1) * reveal,
+            ),
+            ink,
+        );
+    }
+}
+
+fn construction_arc(
+    emit: &mut impl FnMut((f64, f64), (f64, f64), u8),
+    center: (f64, f64),
+    radius: f64,
+    rotation: f64,
+    arc: f64,
+    reveal: f64,
+    ink: u8,
+) {
+    for index in 0..64 {
+        let point = |step: usize| {
+            let angle = rotation + arc * step as f64 / 64.0;
+            (
+                center.0 + radius * angle.cos(),
+                center.1 + radius * angle.sin(),
+            )
+        };
+        construction_line(
+            emit,
+            point(index),
+            point(index + 1),
+            reveal * 64.0 - index as f64,
+            ink,
+        );
+    }
+}
+
+fn construction_path(
+    emit: &mut impl FnMut((f64, f64), (f64, f64), u8),
+    points: &[(f64, f64)],
+    reveal: f64,
+    ink: u8,
+) {
+    for (index, pair) in points.windows(2).enumerate() {
+        construction_line(
+            emit,
+            pair[0],
+            pair[1],
+            reveal * (points.len() - 1) as f64 - index as f64,
+            ink,
+        );
+    }
+}
+
+fn construction_iris(
+    emit: &mut impl FnMut((f64, f64), (f64, f64), u8),
+    center: (f64, f64),
+    width: f64,
+    height: f64,
+    progress: f64,
+    ink: u8,
+) {
+    // An upright central petal, two folded side petals, a girdle and split foot.
+    const PETALS: [&[(f64, f64)]; 3] = [
+        &[
+            (0.0, -0.2),
+            (-0.24, 0.45),
+            (-0.16, 0.92),
+            (0.0, 1.32),
+            (0.16, 0.92),
+            (0.24, 0.45),
+            (0.0, -0.2),
+        ],
+        &[
+            (0.0, -0.1),
+            (-0.48, 0.62),
+            (-1.0, 0.82),
+            (-0.94, 0.23),
+            (-0.62, -0.18),
+            (-0.22, -0.32),
+        ],
+        &[
+            (0.0, -0.1),
+            (0.48, 0.62),
+            (1.0, 0.82),
+            (0.94, 0.23),
+            (0.62, -0.18),
+            (0.22, -0.32),
+        ],
+    ];
+    for (index, petal) in PETALS.iter().enumerate() {
+        let open = ease((progress - index as f64 * 0.14) / 0.65);
+        let point = |(x, y): (f64, f64)| {
+            (
+                center.0 + x * width * (0.16 + 0.84 * open),
+                center.1 + y * height,
+            )
+        };
+        for pair in petal.windows(2) {
+            construction_line(emit, point(pair[0]), point(pair[1]), open, ink);
+        }
+    }
+    let foot = [
+        (-0.43, -0.3),
+        (0.43, -0.3),
+        (0.0, -0.3),
+        (0.0, -0.65),
+        (-0.3, -0.95),
+        (0.0, -0.78),
+        (0.3, -0.95),
+        (0.0, -0.65),
+    ];
+    let foot = foot.map(|(x, y)| (center.0 + x * width, center.1 + y * height));
+    construction_path(emit, &foot, ease((progress - 0.4) / 0.6), ink);
+}
+
+fn laterano_construction(
+    phase: usize,
+    progress: f64,
+    y_max: f64,
+    mut emit: impl FnMut((f64, f64), (f64, f64), u8),
+) {
+    if !progress.is_finite() || !y_max.is_finite() || y_max <= 0.0 {
+        return;
+    }
+    let progress = progress.clamp(0.0, 1.0);
+    let r = y_max.min(62.0) * 0.64;
+    let delayed = |start: f64, duration: f64| ease((progress - start) / duration);
+    for side in [-1.0, 1.0] {
+        construction_line(
+            &mut emit,
+            (side * 103.0, -y_max * 0.8),
+            (side * 103.0, y_max * 0.8),
+            1.0,
+            0,
+        );
+        for row in -2..=2 {
+            let y = row as f64 * y_max * 0.3;
+            construction_line(&mut emit, (side * 103.0, y), (side * 98.0, y), 1.0, 1);
+        }
+        if phase != 1 && phase != 4 {
+            construction_iris(&mut emit, (side * 86.0, 0.0), 10.0, r * 0.43, progress, 1);
+        }
+    }
+    match phase {
+        0 => {
+            let radius = r * 0.78;
+            for (index, side) in [-1.0, 1.0].into_iter().enumerate() {
+                construction_arc(
+                    &mut emit,
+                    (side * r * 0.48, 0.0),
+                    radius,
+                    -TAU * 0.25,
+                    TAU,
+                    delayed(index as f64 * 0.2, 0.72),
+                    if index == 0 { 1 } else { 2 },
+                );
+            }
+            construction_line(
+                &mut emit,
+                (-r * 1.4, 0.0),
+                (r * 1.4, 0.0),
+                delayed(0.35, 0.5),
+                0,
+            );
+            construction_line(
+                &mut emit,
+                (0.0, -r * 0.78),
+                (0.0, r * 0.78),
+                delayed(0.58, 0.4),
+                2,
+            );
+        }
+        1 => {
+            construction_arc(&mut emit, (0.0, 0.0), r * 1.1, 0.0, TAU, 1.0, 0);
+            construction_iris(&mut emit, (0.0, 0.0), r * 0.72, r * 0.9, progress, 2);
+            for side in [-1.0, 1.0] {
+                construction_path(
+                    &mut emit,
+                    &[
+                        (side * r * 1.1, -r * 0.8),
+                        (side * r * 1.25, 0.0),
+                        (side * r * 1.1, r * 0.8),
+                    ],
+                    delayed(0.5, 0.5),
+                    1,
+                );
+            }
+        }
+        2 => {
+            construction_arc(
+                &mut emit,
+                (0.0, 0.0),
+                r * 1.1,
+                0.0,
+                TAU,
+                delayed(0.0, 0.4),
+                1,
+            );
+            for petal in 0..6 {
+                let angle = petal as f64 * TAU / 6.0;
+                let grown = delayed(0.08 + petal as f64 * 0.075, 0.46);
+                construction_arc(
+                    &mut emit,
+                    (angle.cos() * r * 0.48, angle.sin() * r * 0.48),
+                    r * 0.49,
+                    angle + TAU * 0.5,
+                    TAU,
+                    grown,
+                    2,
+                );
+                let next = angle + TAU / 6.0;
+                construction_line(
+                    &mut emit,
+                    (angle.cos() * r, angle.sin() * r),
+                    (next.cos() * r, next.sin() * r),
+                    delayed(0.48 + petal as f64 * 0.055, 0.2),
+                    1,
+                );
+                construction_line(
+                    &mut emit,
+                    (0.0, 0.0),
+                    (angle.cos() * r, angle.sin() * r),
+                    grown,
+                    0,
+                );
+            }
+        }
+        3 => {
+            for layer in 0..3 {
+                let open = delayed(layer as f64 * 0.18, 0.58);
+                let width = r * (0.62 + layer as f64 * 0.26) * (0.2 + 0.8 * open);
+                let top = r * (0.78 + layer as f64 * 0.18);
+                let points = [
+                    (-width, -r * 0.85),
+                    (-width, 0.0),
+                    (-width * 0.65, top * 0.68),
+                    (0.0, top),
+                    (width * 0.65, top * 0.68),
+                    (width, 0.0),
+                    (width, -r * 0.85),
+                ];
+                construction_path(&mut emit, &points, open, if layer == 1 { 2 } else { 1 });
+                construction_line(&mut emit, (-width, -r * 0.85), (width, -r * 0.85), open, 0);
+            }
+            for step in 0..3 {
+                let width = r * (0.8 + step as f64 * 0.2);
+                let y = -r * (0.91 + step as f64 * 0.075);
+                construction_line(
+                    &mut emit,
+                    (-width, y),
+                    (width, y),
+                    delayed(0.55 + step as f64 * 0.09, 0.25),
+                    1,
+                );
+            }
+        }
+        4 => {
+            // Keep the real skill/plugin columns clear; only frame the central seal.
+            for side in [-1.0, 1.0] {
+                let x = side * r * 0.92;
+                construction_path(
+                    &mut emit,
+                    &[
+                        (x * 0.65, r * 0.9),
+                        (x, r * 0.9),
+                        (x, -r * 0.2),
+                        (x * 0.65, -r * 0.2),
+                    ],
+                    delayed(0.1, 0.7),
+                    1,
+                );
+            }
+        }
+        _ => {
+            // The construction contracts into a seal instead of becoming a spinning ring.
+            let radius = r * (1.42 - delayed(0.1, 0.8) * 0.27);
+            construction_arc(
+                &mut emit,
+                (0.0, 0.0),
+                radius,
+                -TAU * 0.25,
+                TAU,
+                delayed(0.05, 0.7),
+                1,
+            );
+            for side in [-1.0, 1.0] {
+                construction_line(
+                    &mut emit,
+                    (side * radius * 1.08, 0.0),
+                    (side * 72.0, 0.0),
+                    delayed(0.45, 0.4),
+                    0,
+                );
+            }
+        }
+    }
+}
+
+fn draw_laterano_cinematic(
+    frame: &mut Frame,
+    area: Rect,
+    seq: &Sequence,
+    still: bool,
+    p: Palette,
+    context: &StartupContext,
+) {
+    let phase = seq.phase.min(5);
+    let progress = if still || seq.waiting() {
+        1.0
+    } else {
+        (seq.elapsed / DURATIONS[phase]).clamp(0.0, 1.0)
+    };
+    let y_max = 110.0 * f64::from(area.height) * 2.0 / f64::from(area.width);
+    let r = y_max.min(62.0) * 0.64;
+    let fit = |(x, y): (f64, f64)| {
+        if phase == 2 && x.abs() < 72.0 {
+            (x * 0.75, y * 0.75 + y_max * 0.17)
+        } else {
+            (x, y)
+        }
+    };
+    let canvas = Canvas::default()
+        .background_color(p.bg)
+        .marker(Marker::Braille)
+        .x_bounds([-110.0, 110.0])
+        .y_bounds([-y_max, y_max])
+        .paint(|ctx| {
+            laterano_construction(phase, progress, y_max, |from, to, ink| {
+                // Reserve two legible rows below the rose for the narrated identity.
+                line(
+                    ctx,
+                    fit(from),
+                    fit(to),
+                    match ink {
+                        0 => p.grid,
+                        1 => p.dim,
+                        _ => p.accent,
+                    },
+                );
+            });
+            if phase != 4 {
+                let mut highlight = |from, to, _| line(ctx, fit(from), fit(to), p.accent);
+                match seq.focus {
+                    1 => {
+                        for side in [-1.0, 1.0] {
+                            construction_iris(
+                                &mut highlight,
+                                (side * 86.0, 0.0),
+                                10.0,
+                                r * 0.43,
+                                progress,
+                                2,
+                            );
+                        }
+                    }
+                    2 => {
+                        for vertex in 0..6 {
+                            let point = |step: usize| {
+                                let angle = step as f64 * TAU / 6.0;
+                                (angle.cos() * r * 1.25, angle.sin() * r * 1.25)
+                            };
+                            construction_line(
+                                &mut highlight,
+                                point(vertex),
+                                point(vertex + 1),
+                                ease(progress),
+                                2,
+                            );
+                        }
+                    }
+                    _ => {
+                        for side in [-1.0, 1.0] {
+                            construction_line(
+                                &mut highlight,
+                                (side * r * 1.2, 0.0),
+                                (side * r * 1.55, 0.0),
+                                ease(progress),
+                                2,
+                            );
+                        }
+                    }
+                }
+            }
+            if !still && (0.0..0.72).contains(&seq.pulse_age) {
+                let pulse = seq.pulse_age / 0.72;
+                let radius = r * (0.08 + ease(pulse) * 0.42);
+                let origin = (
+                    ((seq.pulse_origin.0 * 2.0 - 1.0) * 110.0)
+                        .clamp(-110.0 + radius, 110.0 - radius),
+                    ((1.0 - seq.pulse_origin.1 * 2.0) * y_max)
+                        .clamp(-y_max + radius, y_max - radius),
+                );
+                construction_arc(
+                    &mut |from, to, _| line(ctx, from, to, tint(p.bg, p.accent, 1.0 - pulse)),
+                    origin,
+                    radius,
+                    0.0,
+                    TAU,
+                    1.0,
+                    2,
+                );
+            }
+            if phase >= 4 {
+                let center = (0.0, if phase == 4 { y_max * 0.2 } else { 0.0 });
+                let scale = r / 100.0
+                    * if phase == 4 { 0.78 } else { 1.12 }
+                    * (0.65 + 0.35 * ease(progress * 1.5));
+                let emblem = transformed_badge(VisualStyle::Laterano, center, scale, 0.0);
+                let cell_width = 220.0 / f64::from(area.width);
+                let cell_height = y_max * 2.0 / f64::from(area.height);
+                let engraving = cell_width * 3.0 <= scale * 60.0 && cell_height <= scale * 22.0;
+                for (index, points) in emblem.iter().enumerate() {
+                    let selected = match seq.focus {
+                        1 => index == 1 || index == 2,
+                        2 => index == 4,
+                        _ => index == 0,
+                    };
+                    if index != 3 || !engraving {
+                        ctx.draw(&Points {
+                            coords: points,
+                            color: if selected { p.accent } else { p.fg },
+                        });
+                    }
+                }
+                if engraving {
+                    ctx.print(
+                        -cell_width * 1.5,
+                        center.1 - scale * 68.0,
+                        Span::styled("DSH", p.text().add_modifier(Modifier::BOLD)),
+                    );
+                }
+            }
+            if phase == 2 || (phase == 4 && area.width >= 76 && area.height >= 12) {
+                let cell_width = 220.0 / f64::from(area.width);
+                let cell_height = y_max * 2.0 / f64::from(area.height);
+                let rows = if phase == 2 {
+                    [-y_max + cell_height * 2.5, -y_max + cell_height]
+                } else {
+                    [-y_max * 0.6, -y_max * 0.78]
+                };
+                let decode_age = seq.phase_age.max(seq.elapsed);
+                for (y, value) in [
+                    (
+                        rows[0],
+                        format!(
+                            "PROFILE / {}",
+                            decoded_profile(&context.profile.username, 20, decode_age, 0, still)
+                        ),
+                    ),
+                    (
+                        rows[1],
+                        format!(
+                            "ID / {}",
+                            decoded_profile(&context.profile.badge_id, 24, decode_age, 1, still)
+                        ),
+                    ),
+                ] {
+                    let x = -(Line::from(value.as_str()).width() as f64) * cell_width * 0.5;
+                    ctx.print(x, y, Span::styled(value, p.text().fg(p.dim)));
+                }
+            }
+        });
+    frame.render_widget(canvas, area);
+}
+
 fn draw_cinematic(
     frame: &mut Frame,
     area: Rect,
@@ -860,6 +1385,10 @@ fn draw_cinematic(
     context: &StartupContext,
 ) {
     if area.width == 0 || area.height == 0 {
+        return;
+    }
+    if context.profile.visual_style == VisualStyle::Laterano {
+        draw_laterano_cinematic(frame, area, seq, still, p, context);
         return;
     }
     let phase = seq.phase.min(5);
@@ -1108,7 +1637,13 @@ fn draw_cinematic(
                         Span::styled(
                             format!(
                                 "OPERATOR / {}",
-                                decoded_profile(&context.profile.username, 28, decode_age, 0, still)
+                                decoded_profile(
+                                    &context.profile.username,
+                                    28,
+                                    decode_age,
+                                    0,
+                                    still
+                                )
                             ),
                             p.accent(),
                         ),
@@ -1119,7 +1654,13 @@ fn draw_cinematic(
                         Span::styled(
                             format!(
                                 "ID {} / {}",
-                                decoded_profile(&context.profile.badge_id, 24, decode_age, 1, still),
+                                decoded_profile(
+                                    &context.profile.badge_id,
+                                    24,
+                                    decode_age,
+                                    1,
+                                    still
+                                ),
                                 decoded_profile("LOCAL PROFILE", 24, decode_age, 2, still)
                             ),
                             p.text().fg(p.dim),
@@ -1475,7 +2016,10 @@ mod tests {
             .unwrap();
         let clear = visible_text(after.buffer).replace(' ', "");
         for expected in ["星海研究员", "部门-七", "LOCALPROFILE"] {
-            assert!(clear.contains(expected), "missing decoded value: {expected}");
+            assert!(
+                clear.contains(expected),
+                "missing decoded value: {expected}"
+            );
         }
         seq.confirm((0.5, 0.5));
         seq.tick(DURATIONS[2] + 0.2);
@@ -1625,16 +2169,220 @@ mod tests {
             ..StartupContext::default()
         };
         for theme in ["dark", "light"] {
-            let config = StartupSection { theme: theme.into(), reduced_motion: true, ..StartupSection::default() };
-            assert_ne!(Palette::new(theme, VisualStyle::Laterano).bg, Palette::new(theme, VisualStyle::Rhine).bg);
+            let config = StartupSection {
+                theme: theme.into(),
+                reduced_motion: true,
+                ..StartupSection::default()
+            };
+            assert_ne!(
+                Palette::new(theme, VisualStyle::Laterano).bg,
+                Palette::new(theme, VisualStyle::Rhine).bg
+            );
             let mut terminal = Terminal::new(TestBackend::new(110, 34)).unwrap();
-            let seq = Sequence { phase: 2, ..Sequence::new(true) };
-            let frame = terminal.draw(|frame| draw(frame, &seq, &config, &context, true)).unwrap();
+            let seq = Sequence {
+                phase: 4,
+                ..Sequence::new(true)
+            };
+            let frame = terminal
+                .draw(|frame| draw(frame, &seq, &config, &context, true))
+                .unwrap();
             let text = visible_text(frame.buffer);
             assert!(text.contains("LATERANO"));
             assert!(text.contains("拉特兰操作员"));
             assert!(text.contains("DSH-LATERANO"));
             assert!(text.contains("DSH"));
+        }
+    }
+
+    #[test]
+    fn laterano_construction_is_finite_bounded_and_progressive() {
+        for y_max in [0.1, 39.6, 46.75, 54.0, 220.0] {
+            for phase in 0..6 {
+                let mut stages = Vec::new();
+                for progress in [0.08, 0.35, 0.75, 1.0] {
+                    let mut segments = Vec::new();
+                    laterano_construction(phase, progress, y_max, |from, to, ink| {
+                        for (x, y) in [from, to] {
+                            assert!(x.is_finite() && y.is_finite());
+                            assert!(
+                                x.abs() <= 110.0 && y.abs() <= y_max,
+                                "phase {phase}: ({x}, {y}) exceeds {y_max}"
+                            );
+                        }
+                        segments.push((from, to, ink));
+                    });
+                    assert!(segments.len() < 700);
+                    stages.push(segments);
+                }
+                assert!(
+                    stages.windows(2).all(|pair| pair[0] != pair[1]),
+                    "phase {phase} must construct geometry throughout its duration"
+                );
+            }
+        }
+        for (progress, y_max) in [(f64::NAN, 40.0), (0.5, f64::INFINITY), (0.5, 0.0)] {
+            laterano_construction(0, progress, y_max, |_, _, _| {
+                panic!("invalid geometry input emitted a line")
+            });
+        }
+    }
+
+    #[test]
+    fn laterano_motion_changes_actual_braille_geometry_and_keeps_registration_truthful() {
+        let context = StartupContext {
+            profile: StartupProfile {
+                visual_style: VisualStyle::Laterano,
+                username: "OPERATOR".into(),
+                badge_id: "DSH-LATERANO".into(),
+            },
+            skill_names: vec!["alpha-skill".into(), "beta-skill".into()],
+            plugin_names: vec!["alpha-plugin".into(), "beta-plugin".into()],
+            inventory_loaded: true,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        for phase in 0..6 {
+            let mut stages = Vec::new();
+            for progress in [0.15, 0.8] {
+                let seq = Sequence {
+                    phase,
+                    elapsed: DURATIONS[phase] * progress,
+                    ..Sequence::new(false)
+                };
+                let frame = terminal
+                    .draw(|frame| draw(frame, &seq, &StartupSection::default(), &context, true))
+                    .unwrap();
+                let geometry: Vec<_> = frame
+                    .buffer
+                    .content
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, cell)| {
+                        cell.symbol()
+                            .chars()
+                            .any(|ch| ('\u{2801}'..='\u{28ff}').contains(&ch))
+                            .then(|| (index, cell.symbol().to_owned()))
+                    })
+                    .collect();
+                assert!(!geometry.is_empty());
+                stages.push(geometry);
+                if phase == 4 {
+                    let text = visible_text(frame.buffer);
+                    for name in ["alpha-skill", "beta-skill", "alpha-plugin", "beta-plugin"] {
+                        assert!(text.contains(name));
+                    }
+                }
+            }
+            assert_ne!(
+                stages[0], stages[1],
+                "phase {phase} only changed text or ambient motion"
+            );
+        }
+    }
+
+    #[test]
+    fn laterano_is_stable_with_reduced_motion_and_fits_narrow_terminals() {
+        let context = StartupContext {
+            profile: StartupProfile {
+                username: "OPERATOR".into(),
+                badge_id: "DSH-LATERANO".into(),
+                visual_style: VisualStyle::Laterano,
+            },
+            ..StartupContext::default()
+        };
+        for theme in ["dark", "light"] {
+            let config = StartupSection {
+                theme: theme.into(),
+                reduced_motion: true,
+                ..StartupSection::default()
+            };
+            for (width, height) in [
+                (0, 0),
+                (12, 5),
+                (49, 15),
+                (50, 16),
+                (53, 18),
+                (80, 24),
+                (110, 34),
+            ] {
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                for phase in 0..6 {
+                    let first = Sequence {
+                        phase,
+                        elapsed: DURATIONS[phase] * 0.1,
+                        ambient: 1.0,
+                        ..Sequence::new(false)
+                    };
+                    let second = Sequence {
+                        phase,
+                        elapsed: DURATIONS[phase] * 0.8,
+                        ambient: 99.0,
+                        pulse_age: 0.2,
+                        ..Sequence::new(false)
+                    };
+                    let a = terminal
+                        .draw(|frame| draw(frame, &first, &config, &context, true))
+                        .unwrap()
+                        .buffer
+                        .clone();
+                    let b = terminal
+                        .draw(|frame| draw(frame, &second, &config, &context, true))
+                        .unwrap()
+                        .buffer
+                        .clone();
+                    // The progress footer remains live; all construction pixels are still.
+                    let graphic_start = (2 * width) as usize;
+                    let graphic_end = (height.saturating_sub(5) * width) as usize;
+                    if width >= 50 && height >= 16 {
+                        assert_eq!(
+                            &a.content[graphic_start..graphic_end],
+                            &b.content[graphic_start..graphic_end]
+                        );
+                    }
+                    if width >= 50 && height >= 16 && phase == 2 {
+                        let text = visible_text(&a);
+                        assert!(text.contains("PROFILE / OPERATOR"));
+                        assert!(text.contains("ID / DSH-LATERANO"));
+                    }
+                    assert_eq!(a.content.len(), usize::from(width) * usize::from(height));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn laterano_focus_and_pointer_pulses_change_geometry_without_skipping() {
+        let context = StartupContext {
+            profile: StartupProfile {
+                visual_style: VisualStyle::Laterano,
+                ..StartupProfile::default()
+            },
+            ..StartupContext::default()
+        };
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        for phase in 0..6 {
+            let mut seq = Sequence {
+                phase,
+                elapsed: DURATIONS[phase] * 0.8,
+                ..Sequence::new(false)
+            };
+            let mut render = |seq: &Sequence| {
+                let frame = terminal
+                    .draw(|frame| draw(frame, seq, &StartupSection::default(), &context, true))
+                    .unwrap();
+                frame.buffer.content[160..1520].to_vec()
+            };
+            let baseline = render(&seq);
+            for focus in [1, 2] {
+                seq.select(focus);
+                seq.pulse_age = 10.0;
+                assert_ne!(baseline, render(&seq));
+            }
+            seq.focus = 0;
+            seq.confirm((0.01, 0.99));
+            seq.pulse_age = 0.2;
+            assert_eq!(seq.phase, phase);
+            assert_eq!(seq.elapsed, DURATIONS[phase] * 0.8);
+            assert_ne!(baseline, render(&seq));
         }
     }
 
@@ -1892,6 +2640,58 @@ mod tests {
             .buffer
             .clone();
         assert_eq!(before, after);
+    }
+
+    /// Export fresh frames, including correct hidden cells after CJK glyphs.
+    #[test]
+    #[ignore = "writes target/laterano-tui-*.json for the existing preview renderer"]
+    fn export_laterano_preview_frames() {
+        let context = StartupContext {
+            profile: StartupProfile {
+                username: "OPERATOR".into(),
+                badge_id: "DSH-LATERANO".into(),
+                visual_style: VisualStyle::Laterano,
+            },
+            skill_names: vec![
+                "workspace-review".into(),
+                "code-search".into(),
+                "test-runner".into(),
+            ],
+            plugin_names: vec!["filesystem".into(), "terminal".into(), "browser".into()],
+            inventory_loaded: true,
+        };
+        for (width, height) in [(110, 34), (80, 24), (53, 18)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            let mut frames = Vec::new();
+            for phase in 0..6 {
+                for progress in [0.12, 0.35, 0.75, 1.0] {
+                    let seq = Sequence {
+                        phase,
+                        elapsed: DURATIONS[phase] * progress,
+                        ..Sequence::new(false)
+                    };
+                    let completed = terminal
+                        .draw(|frame| draw(frame, &seq, &StartupSection::default(), &context, true))
+                        .unwrap();
+                    let cells: Vec<_> = completed
+                        .buffer
+                        .content
+                        .iter()
+                        .map(|cell| {
+                            let rgb = |color: Color| match color {
+                                Color::Rgb(r, g, b) => [r, g, b],
+                                _ => [234, 242, 249],
+                            };
+                            serde_json::json!([cell.symbol(), rgb(cell.fg), rgb(cell.bg)])
+                        })
+                        .collect();
+                    frames.push(cells);
+                }
+            }
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join(format!("../../target/laterano-tui-{width}x{height}.json"));
+            std::fs::write(path, serde_json::to_vec(&serde_json::json!({"width":width,"height":height,"frame_duration_ms":250,"frames":frames})).unwrap()).unwrap();
+        }
     }
 
     /// Export fresh frames, including correct hidden cells after CJK glyphs.

@@ -133,18 +133,56 @@ TUI 里常用：
 设置 → **外观**（或**启动动画**）可选择 **莱茵生命风 UI** / **拉特兰风 UI**，选中后自动保存。独立高清预览按 **C** 打开设置，同样可以切换。风格统一保存在本机 `startup-profile.json` 的 `visual_style` 字段，网页、Rust 桌面端与 CLI 共用；旧资料默认保持莱茵生命风。修改姓名、档案编号或播放开关不会重置风格。
 
 - **莱茵生命风 UI / DELTA CIRCUIT**：保留原有三角 DSH 字轨徽章、黑白实验室档案、橙色标记与机械光阑。
-- **拉特兰风 UI / CONCORD**：原创等半径相交圆、三联尖拱与衬线 DSH 铭文徽章；珠白／冷蓝比例推演、杏仁形交叠、几何门扉、双页档案和斜向幕切组成独立六幕开场，带独立合成钟声音效。设计研究参考 [几何与神学的碰撞](https://www.bilibili.com/video/BV17iGR6nEh9/) 和 [众生行记 UI／交互／动效记录](https://www.bilibili.com/video/BV1WFkwBJEhR/)，未使用游戏素材、原视频或原标志。
+- **拉特兰风 UI / CONCORD**：原创等半径相交圆、三联尖拱与衬线 DSH 铭文徽章；加入鸢尾花剪影、四叶花窗、玫瑰窗和交织多边形纹样。珠白／冷蓝线稿逐层构造，黑色花瓣与几何片展开、重组为门扉和双页档案，以快速切幕衔接静止停留，保持扁平画面与独立合成钟声音效。设计研究参考 [几何与神学的碰撞](https://www.bilibili.com/video/BV17iGR6nEh9/) 和 [众生行记 UI／交互／动效记录](https://www.bilibili.com/video/BV1WFkwBJEhR/)，未使用游戏素材、原视频或原标志。
 
 两套风格都读取真实身份和本机 Skills／Plugins，使用既有英文阶段旁白，保留密码验证、减少动态效果与任意位置交互。网页标志、浏览器页签图标、Rust 桌面窗口／任务栏图标随选择更新；终端下次启动读取相同选择，仅显示资料，不增加密码输入。Windows 固定快捷方式文件保留通用 DSH 图标。
 
 ```bash
-dsh startup profile --visual-style laterano  # 拉特兰风；重启终端后生效
+dsh startup profile --visual-style laterano  # 拉特兰风；下次播放生效
 dsh startup profile --visual-style rhine     # 切回莱茵生命风
 dsh app --startup                           # Rust 桌面端
 dsh web --startup                           # 网页端
 ```
 
 独立预览的 `?style=laterano` 可在未连接本地服务时演示新风格；连接后以真实保存的资料为准。原创轮廓分别位于 `docs/startup-emblem.js` 和 `docs/startup-laterano-emblem.js`，运行 `node scripts/export_startup_emblem.cjs`、`python scripts/export_desktop_icon.py` 可重新生成匹配的 SVG、终端轮廓与 Windows 图标。
+
+### 桌面、网页与 TUI 如何使用
+
+**Rust 桌面端与网页端共用同一套高清动画**：两者都使用 `StartupSurface` 加载同一份启动页面、Canvas 图形、文字动效、音频和真实本地读取接口。花纹的构造、重组与切幕一致，无需分别选择或维护两份设计。身份卡、密码输入和 Skills／Plugins 清单始终保持可读，装饰按实际边界避让。
+
+![网页与 Rust 桌面共用的拉特兰风序章](docs/assets/laterano-floral-preview.png)
+
+**TUI 使用单独绘制的终端版本**：通过 Ratatui 的 Braille 点阵构建相交圆、鸢尾纹章、花窗与尖拱，按终端空间重新安排六幕和展开节奏，读取真实已加载能力快照。它沿用同一个 DSH 徽章与风格选择，不嵌入网页；窄终端会简化纹饰，终端不增加密码输入。
+
+终端拉特兰版的构图顺序是 **等圆定基 → 鸢尾展开 → 玫瑰窗构造 → 拱门展开 → 登记归序 → 印记归一**，基础时长为 13.8 秒；身份与真实能力清单仍随阶段显示，交互与旁白等待会延长停留。`1 / 2 / 3`、`← / →` 调整视觉焦点，`Enter / Space` 或左击确认节点，`Esc` 跳过。
+
+![终端拉特兰风六阶段预览](docs/assets/laterano-tui-stages.png)
+
+上图为实际 Ratatui 渲染帧，使用测试身份与能力清单；日常运行显示当前实例的真实资料及已加载清单。
+
+在命令行切换 TUI 风格并立即预览：
+
+```bash
+dsh startup profile --visual-style laterano  # 保存拉特兰风
+dsh startup                                # 交互预览，不创建会话
+dsh startup --auto --silent                 # 自动、静音预览
+
+dsh startup profile --visual-style rhine     # 保存并切回莱茵生命风
+dsh startup                                # 预览旧版
+```
+
+选择风格与开启动画是两件独立的事。选择会持久保存，并供桌面、网页及 TUI 共用；修改风格不会自动开启每次启动动画，也不会修改用户名、档案编号或密码。无需重开终端窗口，新风格在下一次播放时使用。`--theme dark|light` 仅切换明暗配色，不会切换莱茵／拉特兰风。
+
+```bash
+dsh --startup                   # 本次播放所选风格，然后进入 TUI
+dsh startup next on             # 仅下次 TUI 交互启动播放
+dsh startup next off            # 仅下次 TUI 交互启动跳过
+dsh app --startup               # 桌面端：同一套高清版
+dsh web --startup               # 网页端：同一套高清版
+dsh startup web                 # 独立高清预览；按 C 打开设置并切换风格
+```
+
+TUI 风格指令保存到当前配置解析出的 `outer_home`。使用多个独立配置时，可把 `--config <路径>` 放在 `startup` 前，为对应实例切换。旧资料默认保持莱茵生命风；官方原生 DSH 扩展的安装与独立配置见下方说明。
 
 ### 演出与交互
 

@@ -131,6 +131,11 @@
     function emblem(x, y, scale, assembly = 1, ink = color.ink, alpha = 1) {
       const parts = window.DSHLateranoEmblem?.parts || [];
       ctx.save(); ctx.translate(x, y); ctx.scale(scale, scale);
+      // The broken circular seal owns a clean paper medallion. Construction
+      // geometry can surround it, but may never cross the lancets or DSH type.
+      const clear = resting ? 1 : smooth(section(assembly, .10, .72));
+      ctx.save(); ctx.globalAlpha = alpha * clear; ctx.fillStyle = color.paper;
+      ctx.beginPath(); ctx.arc(0, -5, 102, 0, TAU); ctx.fill(); ctx.restore();
       parts.forEach((contours, index) => {
         const arrival = resting ? 1 : ease(section(assembly, index * .035, .64 + index * .035));
         const side = index % 2 ? -1 : 1;
@@ -213,6 +218,140 @@
       }
       arc(x, y, radius * .12, 0, TAU * smooth(section(amount, .33, .68)), color.ink, alpha * .72, 1.5);
     }
+    function iris(x, y, scale = 1, amount = 1, ink = color.ink, alpha = 1, angle = 0) {
+      // An original iris cut from five ink plates. The pointed upright petal,
+      // broad falling side petals and long negative veins remain botanical at
+      // large scale; neither an icon font nor a copied heraldic device is used.
+      const q = index => resting ? 1 : ease(section(amount, .055 + index * .055, .43 + index * .065));
+      ctx.save(); ctx.translate(x, y); ctx.rotate(angle); ctx.scale(scale, scale);
+      for (const side of [-1, 1]) {
+        const open = q(side < 0 ? 1 : 2);
+        if (open <= 0) continue;
+        ctx.save(); ctx.scale(side, 1); ctx.translate((1 - open) * 68, (1 - open) * 40);
+        ctx.rotate((1 - open) * .34); ctx.globalAlpha = alpha * open; ctx.fillStyle = ink;
+        ctx.beginPath(); ctx.moveTo(7, 24);
+        ctx.bezierCurveTo(12, -7, 35, -38, 63, -35);
+        ctx.bezierCurveTo(94, -30, 109, 6, 94, 36);
+        ctx.bezierCurveTo(86, 53, 68, 65, 52, 68);
+        ctx.bezierCurveTo(70, 48, 76, 26, 66, 14);
+        ctx.bezierCurveTo(49, -4, 29, 25, 31, 45);
+        ctx.bezierCurveTo(28, 62, 10, 68, -2, 64);
+        ctx.lineTo(-8, 43); ctx.bezierCurveTo(8, 45, 10, 36, 7, 24); ctx.closePath();
+        // A tapered vein exposes the paper instead of adding a painted line.
+        // Clip to the petal before cutting so a taper can never add exterior ink.
+        ctx.clip();
+        ctx.moveTo(21, 37); ctx.bezierCurveTo(37, -10, 65, -23, 79, 5);
+        ctx.bezierCurveTo(64, -11, 43, 1, 34, 43);
+        ctx.bezierCurveTo(31, 48, 24, 44, 21, 37); ctx.closePath();
+        ctx.fill('evenodd'); ctx.restore();
+      }
+      const standard = q(0);
+      if (standard > 0) {
+        // Rise from the bud so the petal's highest point never exceeds its
+        // final footprint; measured gate capitals can therefore stay intact.
+        ctx.save(); ctx.translate(0, (1 - standard) * 87); ctx.scale(.45 + standard * .55, 1);
+        ctx.globalAlpha = alpha * standard; ctx.fillStyle = ink; ctx.beginPath(); ctx.moveTo(0, -95);
+        ctx.bezierCurveTo(-35, -62, -29, -16, 0, 30);
+        ctx.bezierCurveTo(29, -16, 35, -62, 0, -95); ctx.closePath();
+        ctx.clip();
+        ctx.moveTo(0, -69); ctx.bezierCurveTo(-4, -30, -5, -15, 0, 15);
+        ctx.bezierCurveTo(5, -15, 4, -30, 0, -69); ctx.closePath();
+        ctx.fill('evenodd'); ctx.restore();
+      }
+      const bind = q(3), foot = q(4);
+      polygon([[-26, 45], [26, 45], [22, 56], [-22, 56]], ink, alpha * bind);
+      if (foot > 0) {
+        ctx.save(); ctx.translate(0, 28 * (1 - foot)); ctx.globalAlpha = alpha * foot; ctx.fillStyle = ink;
+        ctx.beginPath(); ctx.moveTo(-11, 59); ctx.lineTo(11, 59);
+        ctx.bezierCurveTo(11, 79, 29, 92, 38, 75);
+        ctx.bezierCurveTo(37, 105, 14, 102, 7, 83);
+        ctx.lineTo(0, 114); ctx.lineTo(-7, 83);
+        ctx.bezierCurveTo(-14, 102, -37, 105, -38, 75);
+        ctx.bezierCurveTo(-29, 92, -11, 79, -11, 59); ctx.closePath(); ctx.fill(); ctx.restore();
+      }
+      ctx.restore();
+    }
+    function quatrefoil(x, y, radius, amount = 1, ink = accent, alpha = 1, filled = false, angle = 0) {
+      const reveal = resting ? 1 : smooth(section(amount, .08, .66));
+      if (reveal <= 0) return;
+      ctx.save(); ctx.translate(x, y); ctx.rotate(angle + (1 - reveal) * Math.PI / 4);
+      ctx.scale(radius, radius * (.15 + .85 * reveal));
+      ctx.globalAlpha = alpha * reveal;
+      const contour = scale => {
+        ctx.moveTo(0, -scale);
+        for (let petal = 0; petal < 4; petal++) {
+          ctx.bezierCurveTo(.45 * scale, -scale, .55 * scale, -.55 * scale, .35 * scale, -.35 * scale);
+          ctx.bezierCurveTo(.55 * scale, -.55 * scale, scale, -.45 * scale, scale, 0);
+          ctx.rotate(Math.PI / 2);
+        }
+        ctx.closePath();
+      };
+      ctx.beginPath(); contour(1);
+      if (filled) { contour(.58); ctx.fillStyle = ink; ctx.fill('evenodd'); }
+      else { ctx.strokeStyle = ink; ctx.lineWidth = 1.15 / radius; ctx.stroke(); }
+      ctx.restore();
+    }
+    function interlace(x, y, radius, amount = 1, alpha = 1, angle = 0) {
+      const traceAmount = smooth(section(amount, .05, .43)), lock = ease(section(amount, .33, .77));
+      ctx.save(); ctx.translate(x, y); ctx.rotate(angle);
+      const octagon = Array.from({ length: 9 }, (_, index) => {
+        const a = index * TAU / 8 - Math.PI / 8;
+        return [Math.cos(a) * radius, Math.sin(a) * radius];
+      });
+      trace(octagon, traceAmount, accent, alpha * .72, 1.1);
+      for (let layer = 0; layer < 2; layer++) {
+        const turn = layer * Math.PI / 4 + (1 - lock) * (layer ? -.72 : .72);
+        const r = radius * (.83 + (1 - lock) * .36);
+        ctx.save(); ctx.rotate(turn);
+        const square = [[-r / ROOT3, -r / ROOT3], [r / ROOT3, -r / ROOT3], [r / ROOT3, r / ROOT3], [-r / ROOT3, r / ROOT3], [-r / ROOT3, -r / ROOT3]];
+        trace(square, traceAmount, layer ? color.ink : accent, alpha * (layer ? .85 : .8), layer ? 2.8 : 1.2);
+        ctx.restore();
+      }
+      for (let index = 0; index < 8; index++) {
+        const a = index * TAU / 8, r = radius * .78;
+        const q = resting ? 1 : smooth(section(amount, .46 + index * .019, .74 + index * .021));
+        if (q <= 0) continue;
+        ctx.save(); ctx.rotate(a);
+        polygon([[r - 17, 0], [r, -6], [r + 17, 0], [r, 6]], index % 2 ? accent : color.ink, alpha * q);
+        ctx.restore();
+      }
+      ctx.restore();
+    }
+    function patternedPanel(x, y, panelWidth, panelHeight, amount = 1, reverse = false) {
+      const open = resting ? 1 : ease(section(amount, .20, .62));
+      if (open <= 0) return;
+      ctx.save(); ctx.translate(x, y);
+      ctx.beginPath(); ctx.rect(-panelWidth / 2, -panelHeight / 2, panelWidth, panelHeight * open); ctx.clip();
+      rect(-panelWidth / 2, -panelHeight / 2, panelWidth, panelHeight, color.ink, .94);
+      const rows = 4, step = panelHeight / rows, radius = Math.min(panelWidth * .25, step * .34);
+      for (let row = 0; row < rows; row++) {
+        const cy = -panelHeight / 2 + step * (row + .5);
+        quatrefoil(0, cy, radius, section(amount, .21 + row * .045, .75 + row * .04), color.paper, .9, true, reverse ? Math.PI / 4 : 0);
+        if (row < rows - 1) diamond(0, cy + step / 2, 2.5, color.paper, .65);
+      }
+      line(-panelWidth / 2 + 5, -panelHeight / 2, -panelWidth / 2 + 5, panelHeight / 2, color.paper, .65, .8);
+      line(panelWidth / 2 - 5, -panelHeight / 2, panelWidth / 2 - 5, panelHeight / 2, color.paper, .65, .8);
+      ctx.restore();
+    }
+    function floralMargins(variant = 0) {
+      // Cropped botanical anchors carry black mass. Their repeatable cutwork
+      // is reused as gate capitals and page edges, not unrelated decorations.
+      const swap = variant % 2 === 1, offset = variant === 5 ? .045 : 0;
+      const leftX = -W * (wide ? .493 : .58), rightX = W * (wide ? .478 : .58);
+      iris(leftX, atY(swap ? .31 : .65), wide ? 2.05 : 1.72, progress, color.ink, .92, swap ? Math.PI : -.12);
+      iris(rightX, atY(swap ? .68 : .235) + offset * H, wide ? 1.80 : 1.67, section(progress, .06, .90), color.ink, .94, swap ? .12 : Math.PI);
+      if (wide) {
+        const panelSide = swap ? -1 : 1;
+        patternedPanel(panelSide * W * .438, atY(swap ? .68 : .64), 82, 212,
+          section(progress, .10, .94), swap);
+        // The upper-left rosette starts below the masthead's brand metadata.
+        interlace(-panelSide * W * .421, atY(swap ? .69 : .365), 99,
+          section(progress, .04, .90), .64, Math.PI / 8);
+      } else {
+        for (const side of [-1, 1]) quatrefoil(side * W * .435, atY(.765), 31,
+          section(progress, .25, .95), accent, .75, true);
+      }
+    }
     function knife(amount, left = true, strength = 1) {
       if (resting || amount <= 0 || amount >= 1) return;
       // One decisive black cut between construction and ink, then a long hold.
@@ -258,12 +397,16 @@
 
 
     function sealScene() {
+      floralMargins(0);
       page('I', .045);
       const radius = wide ? Math.min(272, W * .155) : 232;
       const x = wide ? -W * .225 + parallax.x : parallax.x;
       const y = (wide ? atY(.44) : atY(.385)) + parallax.y;
       const ink = smooth(section(progress, .46, .74));
-      ctx.save(); ctx.translate(x, y); ctx.rotate(gesture); vesica(0, 0, radius, progress, .95, true);
+      ctx.save(); ctx.translate(x, y); ctx.rotate(gesture);
+      interlace(0, 0, radius * 1.02, section(progress, .12, .92), .70, Math.PI / 8);
+      rose(0, 0, radius * .79, section(progress, .18, .88), .58);
+      vesica(0, 0, radius, progress, .95, true);
       if (wide) {
         // Labels share the construction transform, including manual dragging.
         type('A', -radius / 2 - 11, 19, 15, accent, ink, 0, 'right', true);
@@ -281,11 +424,13 @@
         type('DEEPSEEK HARNESS', textX + 2, ruleY + 85, 10, color.soft, ink, 3);
         // A and B are the actual equal-circle centers; C is their intersection.
         type('AC = BC', x, y + ROOT3 * radius / 2 + 32, 12, accent, ink, 1.5, 'center', true);
+        quatrefoil(textX + 322, ruleY + 86, 25, section(progress, .38, .93), color.ink, .92, true);
       }
       knife(section(progress, .38, .54), true, .84);
     }
     function linkScene() {
       outside([headingBox], () => {
+        floralMargins(1);
         page('II', .065);
         const y = atY(.595), anchor = Math.min(W * .32, 440), center = parallax.x * .35;
         const run = smooth(section(progress, .03, .27)), intersection = smooth(section(progress, .24, .49));
@@ -297,6 +442,8 @@
           arc(side * 92 + center, y, 184, start, start + TAU * intersection, accent, .38, .9);
           type(side < 0 ? 'CONTEXT' : 'INFERENCE', x, y + 65, 12, color.soft, smooth(section(progress, .49, .77)), 2, 'center');
           type(side < 0 ? 'a' : 'b', x, y - 37, 24, color.ink, run, 0, 'center', true);
+          interlace(x, y, 57, section(progress, .19, .88), .80, side * Math.PI / 8);
+          iris(x, y - 120, .46, section(progress, .08, .90), color.ink, .87);
         }
         const frame = smooth(section(progress, .50, .78));
         polygon([[center - 47, y - 47], [center + 47, y - 47], [center + 47, y + 47], [center - 47, y + 47]], color.paper, frame);
@@ -310,6 +457,7 @@
       const x = (box.left + box.right) / 2, half = Math.min(W * .39, (box.right - box.left) / 2 + 68);
       const spring = box.top + 55, base = box.bottom + 28;
       outside([box, headingBox], () => {
+        floralMargins(2);
         page('III', .055);
         const construction = smooth(section(progress, 0, .27));
         for (const side of [-1, 1]) {
@@ -323,13 +471,19 @@
             inset === 1 ? .88 : .45, inset === 1 ? 2.3 : .8, inset === 1 ? accent : color.line);
         }
         const locked = smooth(section(progress, .57, .81));
+        const capitalScale = .60;
+        const capitalY = Math.max(spring - 79, headingBox.bottom + 14 + 95 * capitalScale + 8);
+        const columnTop = Math.max(spring, capitalY + 114 * capitalScale + 7);
         for (const side of [-1, 1]) {
           const column = x + side * (half + 42);
-          rect(column - 4, spring, 8, Math.max(0, base - spring) * locked, color.ink, .94);
+          rect(column - 4, columnTop, 8, Math.max(0, base - columnTop) * locked, color.ink, .94);
           line(column - 12, base, column + 12, base, color.ink, locked, 2);
           if (wide) type(side < 0 ? 'IDENTITY' : 'CLEARANCE', column + side * 35, (box.top + box.bottom) / 2,
             10, color.soft, locked, 2, side < 0 ? 'right' : 'left');
+          iris(column, capitalY, capitalScale, section(progress, .18, .90), color.ink, .94);
+          quatrefoil(column, base + 29, 24, section(progress, .32, .92), accent, .92, true);
         }
+        interlace(x, spring - ROOT3 * half + 55, 65, section(progress, .08, .84), .80, Math.PI / 8);
         doorPlanes(box, progress);
       });
       rowRegistration(identityBox);
@@ -358,9 +512,11 @@
     function archiveScene(complete = false) {
       const box = inventoryBox || { left: -W * .37, right: W * .37, top: atY(.38), bottom: atY(.80) };
       outside([box, headingBox], () => {
+        floralMargins(complete ? 4 : 3);
         page(complete ? 'V' : 'IV', .067);
         const radius = Math.min(W * .33, 350), roseY = Math.min(atY(.25), box.top - 48);
         rose(0, roseY, radius, progress, complete ? .57 : .31);
+        interlace(0, roseY, radius * .79, section(progress, .13, .87), complete ? .56 : .38, Math.PI / 8);
         const bound = smooth(section(progress, .19, .55)), unfold = ease(section(progress, .44, .79));
         for (const side of [-1, 1]) {
           const edge = side < 0 ? box.left : box.right, drift = (1 - unfold) * side * W * .33;
@@ -371,6 +527,11 @@
           trace(points.map(([x, y]) => [x + side * 6, y + 4]), bound, color.line, .46, .8);
           line(edge + drift, box.bottom + 11, side * 37, box.bottom + 11 + 16 * unfold, accent, unfold * .64, .8);
           if (complete) pointedArch(side * radius * .70, roseY + 36, 70, box.top - 25, section(progress, .31, .77), .42, .8, accent);
+          iris(edge + side * 35, box.top - 84, .51, section(progress, .20, .91), color.ink, .92);
+          for (let border = 0; border < 3; border++) {
+            quatrefoil(edge + side * 55, lerp(box.top + 72, box.bottom - 30, border / 2), 14,
+              section(progress, .32 + border * .035, .91), accent, .65, complete);
+          }
         }
         archiveRoutes(box, complete);
         knife(section(progress, .40, .52), !complete, .58);
@@ -389,10 +550,14 @@
       }
     }
     function readyScene() {
+      floralMargins(5);
       page('VI', .062);
       const x = wide ? -W * .26 + parallax.x * .3 : parallax.x * .3;
       const y = (wide ? atY(.45) : atY(.355)) + parallax.y * .3, radius = wide ? 171 : 172;
-      ctx.save(); ctx.translate(x, y); ctx.rotate(gesture * .45); vesica(0, 0, radius, progress, .70); ctx.restore();
+      ctx.save(); ctx.translate(x, y); ctx.rotate(gesture * .45);
+      interlace(0, 0, radius * 1.13, section(progress, .07, .85), .80, Math.PI / 8);
+      rose(0, 0, radius * 1.02, section(progress, .17, .91), .64);
+      vesica(0, 0, radius, progress, .70); ctx.restore();
       emblem(x, y, 1.02, section(progress, .27, .70), color.ink);
       const reveal = smooth(section(progress, .45, .79)), tx = wide ? -W * .042 : 0, ty = wide ? atY(.435) : atY(.61);
       type('READY', tx, ty, wide ? 140 : 102, color.ink, reveal, -5, wide ? 'left' : 'center', true);
@@ -401,6 +566,10 @@
       line(start, ty + 93, start + (wide ? 423 : 380) * reveal, ty + 93, accent, .82, 1.1);
       type(identity, tx, ty + 132, 20, color.ink, reveal, 2.4, wide ? 'left' : 'center');
       if (wide) type('DSH / CONCORD', tx, ty + 174, 10, color.soft, reveal, 2.7);
+      for (const side of [-1, 1]) {
+        iris(x + side * radius * .77, y + radius * .92, .64,
+          section(progress, .30 + (side > 0 ? .07 : 0), .95), color.ink, .93, side * -.16);
+      }
       knife(section(progress, .32, .48), false, .84);
     }
     function interaction() {
