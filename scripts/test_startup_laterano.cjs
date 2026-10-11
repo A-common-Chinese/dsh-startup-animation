@@ -228,6 +228,41 @@ for (let phase = 0; phase < phaseCount; phase++) {
     `phase ${phase} must hold its composed pose once construction finishes`);
 }
 
+// Live carriers are tied to the host's real scan status. A timeout, cancelled
+// scan, or completed scan must not leave an ornamental loop claiming activity.
+for (const status of ['idle', 'loading', 'complete', 'error', 'unavailable', 'cancelled']) {
+  const state = { ...base, phase: 3, progress: 1, visualProgress: 1, bookAge: 4, bookOpen: 1,
+    textAge: 4, impulse: 0, drag: 0, pointer: [.5, .5], inventory: { ...inventory, status } };
+  const first = render(1280, 720, { ...state, ambientTime: .25 }), later = render(1280, 720, { ...state, ambientTime: 1.05 });
+  if (status === 'loading') assert.notEqual(first.hash, later.hash, 'an actual pending scan must visibly move along its route');
+  else assert.equal(first.hash, later.hash, `${status} inventory must not animate a false scan`);
+  assert.equal(render(1280, 720, { ...state, reducedMotion: true, ambientTime: .25, bookAge: 0 }).hash,
+    render(1280, 720, { ...state, reducedMotion: true, ambientTime: 100, bookAge: 100 }).hash,
+    `reduced motion must remain stable for actual ${status} inventory`);
+}
+
+let extremeSamples = 0;
+for (const [width, height] of [[240, 320], [320, 240], [2560, 360], [360, 1600]]) {
+  const page = x => {
+    const y = height * .35, w = width * .4, h = height * .48;
+    const heading = { x: x + 8, y: y + h * .08, width: w - 16, height: Math.min(28, h * .22) };
+    const list = { x: x + 8, y: heading.y + heading.height + 4, width: w - 16, height: h * .82 - heading.height - 18 };
+    return { x, y, width: w, height: h, heading, list, occupiedBottom: list.y + Math.min(24, list.height), footerY: list.y + list.height };
+  };
+  const left = page(width * .08), right = page(width * .52);
+  const book = { x: left.x, y: left.y, width: right.x + right.width - left.x, height: left.height,
+    gutterX: (left.x + left.width + right.x) / 2, spread: true, left, right };
+  for (let phase = 0; phase < phaseCount; phase++) for (const progress of [0, .55, 1]) for (const light of [true, false]) {
+    const sample = render(width, height, { ...base, phase, progress, visualProgress: progress, light, impulse: 0,
+      textAge: 4, bookAge: progress * 4, bookOpen: progress, ambientTime: .7,
+      inventory: { ...inventory, status: phase === 3 ? 'loading' : 'complete' },
+      layout: { book, inventory: book, identity: book, heading: { x: width * .2, y: height * .16, width: width * .6, height: height * .14 } } });
+    assert.ok(sample.records.length < 12000, `extreme ${width}x${height} phase ${phase} exceeded the drawing budget`);
+    maxCommands = Math.max(maxCommands, sample.records.length);
+    extremeSamples++;
+  }
+}
+
 // The two arch segments must physically meet at the apex, not approximate a
 // pointed-arch shape with unrelated curves. Test the real recorded circle paths.
 const portal = render(1280, 720, { ...base, phase: 2, reducedMotion: true, impulse: 0 });
@@ -411,6 +446,21 @@ for (const [width, height, book] of [
         `source arch must be geometrically continuous at ${width}px, source progress ${progress}; discontinuity ${distance.toFixed(3)}px`);
     }
   }
+  for (const progress of [.55, .63, 1]) {
+    const old = render(width, height, { ...base, phase: 2, visualProgress: progress, impulse: 0, layout: sourceLayout });
+    const next = frame(0, { bookSource: { ...state.bookSource, progress } });
+    const oldRings = manuscriptRings(old, unit), nextRings = manuscriptRings(next, unit);
+    assert.equal(oldRings.length, 8, 'the preceding identity scene must actually paint both seal originals');
+    assert.equal(nextRings.length, oldRings.length, 'entry to the book must inherit the complete pair of seal originals');
+    const sealInk = (sample, rings) => sample.paintings.filter(paint => rings.some(ring =>
+      Math.abs(paint.matrix[4] - ring.matrix[4]) < 1e-9 && Math.abs(paint.matrix[5] - ring.matrix[5]) < 1e-9));
+    const oldInk = sealInk(old, oldRings), nextInk = sealInk(next, nextRings);
+    assert.equal(nextInk.length, oldInk.length, 'the source seal must retain all inner traceries, not only its outer ring');
+    const previous = oldInk.flatMap(pathSegments).flat(), incoming = nextInk.flatMap(pathSegments).flat();
+    assert.equal(previous.length, incoming.length);
+    assert.ok(previous.every((point, index) => Math.hypot(point[0] - incoming[index][0], point[1] - incoming[index][1]) < 1e-6),
+      `the entire seal imprint must be positionally continuous from source progress ${progress} at ${width}px`);
+  }
   // The physical outlines move continuously, retaining their opaque ink rather
   // than disappearing and being replaced by the destination page at a cut.
   for (const age of [.1, .3, .48, .56, .68, .72, 1.08, 1.35, 1.65, 1.72]) {
@@ -485,6 +535,10 @@ function clipHole(paint, box, padding = 6) {
         Math.abs(bottom[0] - box.x - box.width - padding) < 1e-7 && Math.abs(bottom[1] - box.y - box.height - padding) < 1e-7;
     }));
 }
+function manuscriptRings(sample, unit) {
+  return sample.paintings.filter(paint => paint.op === 'stroke' && paint.globalAlpha === .67 &&
+    Math.abs(paint.lineWidth * unit - 1.05) < 1e-7 && paint.commands.length === 1 && paint.commands[0].op === 'arc');
+}
 const illuminatedPage = (x, y, width, height, compact) => {
   const inset = compact ? 12 : 35, top = compact ? 25 : 44;
   const heading = { x: x + inset, y: y + top, width: width - inset * 2, height: 44 };
@@ -499,6 +553,7 @@ for (const [width, height, left, right] of [
   const book = { x: left.x, y: left.y, width: right.x + right.width - left.x, height: left.height,
     gutterX: (left.x + left.width + right.x) / 2, spread: true, left, right };
   const state = { ...base, phase: 3, visualProgress: 1, progress: 1, bookAge: 3, bookOpen: 1, textAge: 3, impulse: 0,
+    inventory: { status: 'idle', skills: [], plugins: [], issues: [] },
     layout: { book, inventory: book } };
   const frame = changes => {
     const sample = render(width, height, { ...state, ...changes });
@@ -507,22 +562,23 @@ for (const [width, height, left, right] of [
     return sample;
   };
   const ornaments = sample => sample.paintings.filter(paint => [left, right].some(page => clipHole(paint, page.heading)));
-  const sealRings = sample => sample.paintings.filter(paint => {
-    if (paint.op !== 'stroke' || paint.globalAlpha !== .67 || Math.abs(paint.lineWidth * unit - 1.05) >= 1e-7 ||
-      paint.commands.length !== 1 || paint.commands[0].op !== 'arc') return false;
+  const onPaper = paint => paint.clips.some(clip => clip.rule === 'nonzero' && clip.commands.filter(command => command.op === 'bezierCurveTo').length >= 3);
+  const pageOrnaments = sample => ornaments(sample).filter(onPaper);
+  const sealRings = sample => manuscriptRings(sample, unit).filter(paint => {
     const [x, y] = screenPoint(paint.commands[0]);
     return x > book.x && x < book.x + book.width && y > book.y && y < book.y + book.height;
   });
   const completed = frame(), illumination = ornaments(completed);
   assert.ok(illumination.length > 20, 'the completed pages must gain real ornamental paths inside the measured writing exclusions');
+  assert.ok(pageOrnaments(completed).length > 20, 'page-border tracery must retain the actual bowed-paper clipping surface');
   for (const paint of illumination) {
     const page = clipHole(paint, left.heading) ? left : right;
     const occupied = { ...page.list, height: page.occupiedBottom - page.list.y };
     const headingClip = clipHole(paint, page.heading), writingClip = clipHole(paint, occupied);
     assert.ok(writingClip && writingClip !== headingClip, 'each ornamental stroke needs independent heading and real text exclusions');
-    assert.ok(paint.clips.some(clip => clip.rule === 'nonzero' && clip.commands.filter(command => command.op === 'bezierCurveTo').length >= 3),
-      'illumination must remain inside the real bowed paper contour while the page unfolds');
-    assert.equal(paint.matrix[1], 0); assert.equal(paint.matrix[2], 0);
+    const [a, b, c, d] = paint.matrix, scale = Math.hypot(a, b);
+    assert.ok(scale > 0 && Math.abs(scale - Math.hypot(c, d)) < 1e-9 && Math.abs(a * c + b * d) < 1e-9 && a * d - b * c > 0,
+      'ornament turns and scaling must stay in the flat page plane without skew or perspective');
   }
   const rings = sealRings(completed);
   assert.equal(rings.length, 8, 'both sparse pages must gain a composed four-part seal');
@@ -535,29 +591,86 @@ for (const [width, height, left, right] of [
       'seals must adapt to narrow page widths instead of being cropped into the spine');
   }
   const early = frame({ bookAge: 1.12 }), ruled = frame({ bookAge: 1.4 }), inscribed = frame({ bookAge: 1.8 });
-  assert.equal(ornaments(early).length, 0, 'illumination must wait for the physical leaves');
-  assert.ok(ornaments(ruled).length > 0, 'border tracery enters while the leaves are opening');
-  assert.equal(sealRings(ruled).length, 0, 'page seals follow the earlier border layer');
+  assert.equal(pageOrnaments(early).length, 0, 'new page-border illumination must wait for the physical leaves');
+  assert.ok(pageOrnaments(ruled).length > 0, 'border tracery enters while the leaves are opening');
+  assert.equal(manuscriptRings(ruled, unit).length, 8, 'the inherited seals must remain present while the page borders assemble');
   if (left.width >= 210) {
     const headerCopy = sample => ornaments(sample).filter(paint => paint.op === 'fillText').map(paint => paint.args[0]).join('');
     assert.equal(headerCopy(ruled), '', 'running heads must follow the earlier border layer');
     assert.match(headerCopy(frame({ bookAge: 1.6 })), /CONCORD \/ ICONCORD \/ II/, 'running heads must start engraving before the seals');
   }
-  assert.equal(sealRings(inscribed).length, 8, 'seal construction begins after the border and running head');
-  const earlySweep = sealRings(inscribed)[0].commands[0].args;
-  const fullSweep = rings[0].commands[0].args;
-  assert.ok(earlySweep[4] - earlySweep[3] < fullSweep[4] - fullSweep[3], 'seals must be drawn progressively, not merely faded in as complete rings');
+  assert.equal(manuscriptRings(inscribed, unit).length, 8, 'all inherited ring segments remain visible during the arrival');
+  const initialRing = manuscriptRings(frame({ bookAge: 0 }), unit)[0].commands[0];
+  const duringRing = manuscriptRings(inscribed, unit)[0].commands[0], finalRing = rings[0].commands[0];
+  const initialPoint = screenPoint(initialRing), duringPoint = screenPoint(duringRing), finalPoint = screenPoint(finalRing);
+  assert.ok(Math.hypot(initialPoint[0] - finalPoint[0], initialPoint[1] - finalPoint[1]) > 30 &&
+    Math.hypot(duringPoint[0] - finalPoint[0], duringPoint[1] - finalPoint[1]) > 2,
+    'the existing seal must physically travel into the leaf rather than cut or fade to a second mark');
+  assert.ok(finalRing.args[2] > initialRing.args[2] * 1.2, 'a sparse page must visibly expand the incoming imprint into its illuminated seal');
+  for (const age of [0, .2, .58, .73, .82, 1.15, 1.8, 2.42, 2.61, 3]) {
+    const sample = frame({ bookAge: age });
+    const ringInk = manuscriptRings(sample, unit), next = manuscriptRings(frame({ bookAge: age + .00001 }), unit);
+    const points = ringInk.flatMap(pathSegments).flat(), advanced = next.flatMap(pathSegments).flat();
+    assert.equal(points.length, advanced.length, 'seal topology must be carried through each choreography handoff');
+    assert.ok(points.every((point, index) => Math.hypot(point[0] - advanced[index][0], point[1] - advanced[index][1]) < .1),
+      'advancing the migration clock infinitesimally must not jump a seal');
+    const travellingInk = sample.paintings.filter(paint => !onPaper(paint) && clipHole(paint, left.heading) && clipHole(paint, right.heading));
+    assert.ok(travellingInk.length > 20, 'both seal originals must be painted under fixed screen-space text guards');
+    for (const page of [left, right]) assert.ok(travellingInk.every(paint => clipHole(paint, { ...page.list, height: page.occupiedBottom - page.list.y })),
+      'rotating and moving seal ink must retain both real list exclusions at every sampled pose');
+  }
   assert.deepEqual(ornaments(frame({ phase: 4 })), illumination, 'result registration must carry the same page illumination without rebuilding it');
   assert.equal(frame({ reducedMotion: true, bookAge: 0, ambientTime: 0 }).hash,
     frame({ reducedMotion: true, bookAge: 100, ambientTime: 100 }).hash, 'reduced motion must use the final readable illumination pose');
+  const settled = manuscriptRings(frame({ bookAge: 100, pointer: [.5, .5], drag: 0 }), unit).flatMap(pathSegments);
+  const accessible = manuscriptRings(frame({ reducedMotion: true, bookAge: 0 }), unit).flatMap(pathSegments);
+  assert.deepEqual(accessible, settled, 'reduced motion must place seals in their final destinations, not freeze them along the travel path');
+
+  // Real SSE rows may grow while the book is already open. During discovery
+  // the original seals park at fixed clasps; only registration moves them into
+  // the final free space, preventing per-row changes from teleporting marks.
+  const filledBook = { ...book, left: { ...left, occupiedBottom: left.list.y + left.list.height },
+    right: { ...right, occupiedBottom: right.list.y + right.list.height } };
+  const sealPose = sample => manuscriptRings(sample, unit).flatMap(pathSegments);
+  for (const status of ['loading', 'complete', 'error', 'cancelled', 'unavailable']) {
+    for (const age of [.9, 1.8, 4]) {
+      const actual = { ...inventory, status }, sparse = frame({ inventory: actual, bookAge: age });
+      const full = frame({ inventory: actual, bookAge: age, layout: { book: filledBook, inventory: book } });
+      assert.deepEqual(sealPose(sparse), sealPose(full), `${status} SSE reflow must not change a migrating imprint's destination at age ${age}`);
+    }
+  }
+  const beforeRegistration = frame({ inventory, bookAge: 4 });
+  const registration = progress => frame({ phase: 4, inventory, bookAge: 4, progress, visualProgress: progress });
+  assert.deepEqual(sealPose(registration(0)), sealPose(beforeRegistration), 'registration must start from the already parked clasp pose');
+  assert.deepEqual(folioPaper(registration(0).records), folioPaper(beforeRegistration.records), 'the real result must not restart or replace the opened paper');
+  assert.deepEqual(sealPose(registration(1)), sealPose(completed), 'finished real results must place the inherited seals into the measured free area');
+  assert.deepEqual(sealPose(frame({ phase: 4, inventory, bookAge: 0, progress: 0, visualProgress: 0, reducedMotion: true })), sealPose(registration(1)),
+    'reduced motion must directly use the completed registration pose');
+  for (const progress of [0, .14, .15, .25, .5, .81, .82, .99]) {
+    const sample = registration(progress), current = sealPose(sample).flat(), next = sealPose(registration(progress + .00001)).flat();
+    assert.equal(current.length, next.length);
+    assert.ok(current.every((point, index) => Math.hypot(point[0] - next[index][0], point[1] - next[index][1]) < .1),
+      'registration must move continuously from its exterior clasps into the final writing-free area');
+    for (const ring of manuscriptRings(sample, unit)) for (const page of [left, right]) {
+      assert.ok(clipHole(ring, page.heading) && clipHole(ring, { ...page.list, height: page.occupiedBottom - page.list.y }),
+        'registered seal travel must keep both true headings and list bodies protected');
+    }
+  }
 
   for (const occupancy of ['overflow', 'unknown', 'wrapped']) {
     const adjusted = Object.fromEntries(['left', 'right'].map(side => {
       const page = book[side];
       return [side, { ...page, occupiedBottom: occupancy === 'unknown' ? NaN : page.list.y + page.list.height - (occupancy === 'wrapped' ? 12 : 0) }];
     }));
-    assert.equal(sealRings(frame({ layout: { book: { ...book, ...adjusted }, inventory: book } })).length, 0,
+    const packed = frame({ layout: { book: { ...book, ...adjusted }, inventory: book } });
+    assert.equal(sealRings(packed).length, 0,
       `${occupancy} text bounds must remove the seal rather than spend real list space on decoration`);
+    const clasps = manuscriptRings(packed, unit);
+    assert.equal(clasps.length, 8, 'dense or unmeasured lists must retain their inherited seals as exterior clasps');
+    assert.ok(clasps.every(ring => {
+      const arc = ring.commands[0], [x] = screenPoint(arc), radius = arc.args[2] * unit;
+      return x + radius < book.x || x - radius > book.x + book.width;
+    }), 'the entire clasp ring must stay beyond the physical page edge instead of covering a real row');
   }
   const missing = { ...book, left: { ...left, heading: null }, right: { ...right, list: null } };
   assert.equal(sealRings(frame({ layout: { book: missing, inventory: book } })).length, 0,
@@ -571,4 +684,4 @@ for (const [width, height, left, right] of [
   assert.ok(overlapInk.every(paint => clipHole(paint, { ...left.list, height: left.occupiedBottom - left.list.y })),
     'overlapping title/body exclusions must both remain active on the same ornamental strokes');
 }
-console.log(`PASS: ${samples} Laterano frames, measured writing exclusions, layered manuscript illumination, single upright iris, portal-to-spine continuity, staggered curved folio, truthful inventory and reduced motion. Peak: ${maxCommands}/12000.`);
+console.log(`PASS: ${samples} reference + ${extremeSamples} extreme Laterano frames, measured writing exclusions, layered manuscript illumination, single upright iris, portal-to-spine continuity, staggered curved folio, truthful loading activity and reduced motion. Peak: ${maxCommands}/12000.`);

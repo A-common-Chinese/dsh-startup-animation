@@ -180,7 +180,10 @@
     }
     function page(numeral, opacity = .055) {
       // The chapter becomes an architectural fragment, not a field of HUD ticks.
-      type(numeral, wide ? W * .455 : W * .48, atY(.46), wide ? 770 : 590, color.ink, opacity, -25, 'right', true);
+      const settle = phase === 3 || phase === 4 ? bookBuild : smooth(section(progress, .02, .74));
+      const drift = (1 - settle) * (phase % 2 ? -160 : 190);
+      type(numeral, (wide ? W * .455 : W * .48) + drift, atY(.46) + (1 - settle) * 60,
+        wide ? 770 : 590, color.ink, opacity, -25, 'right', true);
       const x0 = -W / 2 + 43, x1 = W / 2 - 43, y = atY(.835);
       line(x0, y, x1, y, color.line, .52, .8);
       line(x0, y, x0 + 61, y, accent, .94, 2);
@@ -238,6 +241,39 @@
         if (reveal > .5) diamond(x + Math.cos(a) * radius, y + Math.sin(a) * radius, 3, accent, alpha * reveal);
       }
       arc(x, y, radius * .12, 0, TAU * smooth(section(amount, .33, .68)), color.ink, alpha * .72, 1.5);
+    }
+    function hingedHalo(x, y, radius, amount, reverse = false) {
+      // Twelve separated archivolts arrive in opposing processions. Their
+      // centres, radii and angles travel; this is not one rotating HUD ring.
+      for (let bay = 0; bay < 12; bay++) {
+        const side = bay % 2 ? 1 : -1;
+        const q = smooth(section(amount, .04 + bay % 4 * .035, .68 + bay % 4 * .045));
+        const a = bay * TAU / 12 - Math.PI / 2;
+        const turn = side * (reverse ? -1 : 1) * (1 - q) * Math.PI * .48;
+        const shift = (1 - q) * radius * .52;
+        const cx = x + Math.cos(a) * shift, cy = y + Math.sin(a) * shift;
+        const r = radius * (1 + (1 - q) * .22);
+        arc(cx, cy, r, a + turn + .045, a + turn + .045 + (TAU / 12 - .09) * q,
+          bay % 3 ? color.line : accent, bay % 3 ? .73 : .76, bay % 3 ? .85 : 2.2);
+        const inner = [cx + Math.cos(a + turn) * r * .91, cy + Math.sin(a + turn) * r * .91];
+        const outer = [cx + Math.cos(a + turn) * r * 1.035, cy + Math.sin(a + turn) * r * 1.035];
+        trace([inner, outer], q, color.ink, .66, .95);
+        if (q > 0) diamond(outer[0], outer[1], 3.5 * q, accent, .80, false);
+      }
+    }
+    function archPose(x, spring, half, base, inset, amount) {
+      const lock = smooth(section(amount, .03 + inset * .055, .58 + inset * .06));
+      return { x: x + (inset - 1) * 106 * (1 - lock), spring: spring + 108 * (1 - lock),
+        half: (half + inset * 14) * (1 + .22 * (1 - lock)), base: base + 52 * (1 - lock) };
+    }
+    function identitySealAnchor(box, amount, index) {
+      const side = index ? 1 : -1, x = (box.left + box.right) / 2;
+      const half = Math.min(W * .39, (box.right - box.left) / 2 + 68);
+      const arrival = smooth(section(amount, .41, .91));
+      const dockX = clamp(x + side * (half + 42), -W / 2 + 40, W / 2 - 40);
+      return { x: dockX + side * Math.min(W * .20, 180) * (1 - arrival),
+        y: box.bottom + 52 + 80 * (1 - arrival), radius: lerp(14, 26, arrival),
+        turn: side * (1 - arrival) * Math.PI * .8, amount: arrival };
     }
     function iris(x, y, scale = 1, amount = 1, ink = color.ink, alpha = 1, angle = 0) {
       // An original iris cut from five ink plates. The pointed upright petal,
@@ -450,6 +486,30 @@
       // One upright iris is the botanical signature. All other marginalia use
       // architectural and engraved geometry, so the page never becomes floral wallpaper.
       const book = variant === 3 || variant === 4;
+      const marginArrival = (order, side, paint) => {
+        const q = book ? smooth(section(bookAge, .03 + order * .045, 1.35 + order * .055)) :
+          smooth(section(amount, .03 + order * .035, .75 + order * .025));
+        // Each movement brings the same architectural marginalia from a
+        // different direction. The book inherits their source pose before a
+        // short outward procession; its persistent clock survives registration.
+        const sourceQ = smooth(section(clamp(finite(state.bookSource?.progress, 1)),
+          .03 + order * .035, .75 + order * .025));
+        const excursion = q > 0 && q < 1 ? Math.sin(q * Math.PI) : 0;
+        let dx = 0, dy = 0;
+        if (book) {
+          dx = side * (130 * (1 - sourceQ) * (1 - q) + 80 * excursion);
+          dy = -110 * (1 - sourceQ) * (1 - q) + 100 * excursion;
+        } else if (variant === 1) {
+          dx = -side * 90 * (1 - q); dy = side * 160 * (1 - q);
+        } else if (variant === 2) {
+          dx = side * 130 * (1 - q); dy = -110 * (1 - q);
+        } else if (variant === 5) {
+          dx = -side * 150 * (1 - q); dy = 80 * (1 - q);
+        } else {
+          dx = side * 180 * (1 - q); dy = 40 * (1 - q);
+        }
+        ctx.save(); ctx.translate(dx, dy); paint(); ctx.restore();
+      };
       // Reserve the same right margin on every movement. Its width follows the
       // shared folio breakpoints, with the measured page as the final authority.
       // The complete +/-109 petal silhouette must fit both the page and screen.
@@ -464,15 +524,15 @@
       if (wide) {
         const left = -W * .437;
         const move = book ? smooth(section(bookAge, .1, 1.2)) : 0;
-        triptych(left, atY(lerp(.47, .59, move)), 145, 219, section(amount, .02, .88), .86);
-        patternedPanel(W * .445, atY(lerp(.754, .745, move)), 63, 152, section(amount, .12, .92));
-        radiantSeal(left, atY(.29), 53, section(amount, .08, .93), .86);
-        braid(left - 70, atY(.733), 141, section(amount, .24, .97), .85);
-        engravedCorner(-W * .37, atY(.18), 1, section(amount, .08, .96), .74);
-        engravedCorner(W * .37, atY(.775), -1, section(amount, .21, .98), .62);
+        marginArrival(0, -1, () => triptych(left, atY(lerp(.47, .59, move)), 145, 219, section(amount, .02, .88), .86));
+        marginArrival(2, 1, () => patternedPanel(W * .445, atY(lerp(.754, .745, move)), 63, 152, section(amount, .12, .92)));
+        marginArrival(1, -1, () => radiantSeal(left, atY(.29), 53, section(amount, .08, .93), .86));
+        marginArrival(3, -1, () => braid(left - 70, atY(.733), 141, section(amount, .24, .97), .85));
+        marginArrival(2, -1, () => engravedCorner(-W * .37, atY(.18), 1, section(amount, .08, .96), .74));
+        marginArrival(4, 1, () => engravedCorner(W * .37, atY(.775), -1, section(amount, .21, .98), .62));
       } else {
-        radiantSeal(-W * .367, atY(.717), 43, section(amount, .08, .93), .90);
-        braid(-W * .31, atY(.797), W * .62, section(amount, .25, .96), .78);
+        marginArrival(1, -1, () => radiantSeal(-W * .367, atY(.717), 43, section(amount, .08, .93), .90));
+        marginArrival(3, 1, () => braid(-W * .31, atY(.797), W * .62, section(amount, .25, .96), .78));
       }
     }
     function rowRegistration(box) {
@@ -508,6 +568,7 @@
       const y = (wide ? atY(.44) : atY(.385)) + parallax.y;
       const ink = smooth(section(progress, .46, .74));
       ctx.save(); ctx.translate(x, y); ctx.rotate(gesture);
+      hingedHalo(0, 0, radius * 1.26, section(progress, .02, .92));
       interlace(0, 0, radius * 1.02, section(progress, .12, .92), .70, Math.PI / 8);
       rose(0, 0, radius * .79, section(progress, .18, .88), .58);
       vesica(0, 0, radius, progress, .95, true);
@@ -540,13 +601,28 @@
         line(-anchor, y, lerp(-anchor, anchor, run), y, color.ink, .86, 1.7);
         line(center, y - 174, center, lerp(y - 174, y + 174, intersection), accent, .84, 1.2);
         for (const side of [-1, 1]) {
-          const x = side * anchor, start = side < 0 ? -Math.PI / 2 : Math.PI / 2;
+          const dock = smooth(section(progress, .05 + (side > 0 ? .09 : 0), .72));
+          const x = side * lerp(anchor + Math.min(W * .13, 190), anchor, dock);
+          const shiftY = side * 94 * Math.sin((1 - dock) * Math.PI / 2);
+          const start = side < 0 ? -Math.PI / 2 : Math.PI / 2;
           dot(x, y, 6, color.ink); arc(x, y, 14, 0, TAU * run, accent, .75, .8);
           arc(side * 92 + center, y, 184, start, start + TAU * intersection, accent, .38, .9);
           type(side < 0 ? 'CONTEXT' : 'INFERENCE', x, y + 65, 12, color.soft, smooth(section(progress, .49, .77)), 2, 'center');
           type(side < 0 ? 'a' : 'b', x, y - 37, 24, color.ink, run, 0, 'center', true);
-          interlace(x, y, 57, section(progress, .19, .88), .80, side * Math.PI / 8);
-          radiantSeal(x, y - 123, 49, section(progress, .08, .90), .82);
+          interlace(x, y + shiftY, lerp(103, 57, dock), section(progress, .19, .88), .80,
+            side * Math.PI / 8 + side * (1 - dock) * Math.PI * .65);
+          radiantSeal(x, y - 123 + shiftY, 49, section(progress, .08, .90), .82);
+          const road = Array.from({ length: 21 }, (_, point) => {
+            const t = point / 20;
+            return [lerp(side * anchor, center, t), y + side * Math.sin(t * Math.PI) * 114];
+          });
+          trace(road, smooth(section(progress, .15, .73)), accent, .60, 1.3);
+          for (let pilgrim = 0; pilgrim < 3; pilgrim++) {
+            const q = smooth(section(progress, .12 + pilgrim * .11, .70 + pilgrim * .07));
+            const t = q * (.56 + pilgrim * .14);
+            diamond(lerp(side * anchor, center, t), y + side * Math.sin(t * Math.PI) * 114,
+              5.5, pilgrim % 2 ? color.ink : accent, q > 0 ? .88 : 0, pilgrim !== 1);
+          }
         }
         const frame = smooth(section(progress, .50, .78));
         polygon([[center - 47, y - 47], [center + 47, y - 47], [center + 47, y + 47], [center - 47, y + 47]], color.paper, frame);
@@ -569,7 +645,8 @@
         line(x - half * 1.5, spring, x + half * 1.5, spring, color.line, construction * .36, .8);
         line(x, spring - ROOT3 * half - 32, x, base + 12, color.line, construction * .36, .8);
         for (let inset = 0; inset < 3; inset++) {
-          pointedArch(x, spring, half + inset * 14, base, section(progress, .19 + inset * .04, .70 + inset * .035),
+          const pose = archPose(x, spring, half, base, inset, progress);
+          pointedArch(pose.x, pose.spring, pose.half, pose.base, section(progress, .19 + inset * .04, .70 + inset * .035),
             inset === 1 ? .88 : .45, inset === 1 ? 2.3 : .8, inset === 1 ? accent : color.line);
         }
         const locked = smooth(section(progress, .57, .81));
@@ -582,7 +659,9 @@
           if (wide) type(side < 0 ? 'IDENTITY' : 'CLEARANCE', column + side * 35, (box.top + box.bottom) / 2,
             10, color.soft, locked, 2, side < 0 ? 'right' : 'left');
           radiantSeal(column, capitalY, 45, section(progress, .18, .90), .88);
-          diamond(column, base + 24, 12, accent, locked, false);
+          const seed = identitySealAnchor(box, progress, side > 0 ? 1 : 0);
+          ctx.save(); ctx.translate(seed.x, seed.y); ctx.rotate(seed.turn);
+          manuscriptSeal(0, 0, seed.radius, side > 0 ? 1 : 0, seed.amount); ctx.restore();
         }
         interlace(x, spring - ROOT3 * half + 55, 65, section(progress, .08, .84), .80, Math.PI / 8);
       });
@@ -603,9 +682,20 @@
           diamond(rail + side * 12, y, 2.5, accent, reveal, complete);
         }
         if (inventory.status === 'loading' && !reduced) {
-          const y = lerp(box.top + 25, box.bottom - 25, fract(ambient * .42 + (side < 0 ? 0 : .5)));
+          // Alternating couriers indicate activity only. Their cyclic motion
+          // carries no percentage, elapsed estimate or invented item count.
+          const cycle = ambient * 1.65 + (side < 0 ? 0 : Math.PI);
+          const y = lerp(box.top + 25, box.bottom - 25, .5 - Math.cos(cycle) * .5);
           line(rail, y - 18, rail, y + 18, accent, .9, 2.3);
-          dot(rail, y, 3, color.ink, .85);
+          diamond(rail, y, 5, color.ink, .9, false);
+          for (let echo = 1; echo <= 3; echo++) {
+            const yy = lerp(box.top + 25, box.bottom - 25, .5 - Math.cos(cycle - echo * .22) * .5);
+            line(rail - 4, yy, rail + 4, yy, accent, .7 - echo * .12, .9);
+          }
+          const gateY = side < 0 ? box.top - 20 : box.bottom + 17;
+          const opening = .5 + Math.sin(cycle) * .5;
+          trace([[rail - side * 10, gateY - 8 * opening], [rail, gateY],
+            [rail + side * 10, gateY + 8 * opening]], 1, accent, .85, 1.2);
         }
       }
     }
@@ -663,15 +753,15 @@
       };
       outside([movingHole(sourceIdentity)], () => {
         for (let inset = 0; inset < 3; inset++) {
-          const radius = half + inset * 14;
+          const pose = archPose(x, spring, half, base, inset, srcProgress), radius = pose.half;
           const sourceAmount = smooth(section(srcProgress, .19 + inset * .04, .70 + inset * .035));
           const curve = Math.min(1, sourceAmount * 1.5), legs = smooth(section(sourceAmount, .43, 1));
           for (let index = 0; index < 2; index++) {
             const side = index ? 1 : -1, leaf = folio.leaves[index], points = [];
             const bindingPoint = t => [folio.center + side * (4 + inset * 3), lerp(folio.bottom + 12, folio.top + 10, t)];
             const legPoints = [
-              phasePoint([x + side * radius, lerp(spring, base, legs)], bindingPoint(0), pageRim(folio, leaf, side, 0, 3 + inset * 4)),
-              phasePoint([x + side * radius, spring], bindingPoint(.22), pageRim(folio, leaf, side, .22, 3 + inset * 4)),
+              phasePoint([pose.x + side * radius, lerp(pose.spring, pose.base, legs)], bindingPoint(0), pageRim(folio, leaf, side, 0, 3 + inset * 4)),
+              phasePoint([pose.x + side * radius, pose.spring], bindingPoint(.22), pageRim(folio, leaf, side, .22, 3 + inset * 4)),
             ];
             trace(legPoints, 1, inset === 1 ? accent : color.line, inset === 1 ? .88 : .45, inset === 1 ? 2.3 : .8);
             // Fixed cardinality makes the entire arc-to-paper transformation
@@ -681,7 +771,7 @@
               // The right source arc grows from the apex towards its spring;
               // preserving that opposite direction matters for early skips.
               const a = (index ? 1 - curve + curve * q : q * curve) * Math.PI / 3;
-              const start = [x + side * (2 * radius * Math.cos(a) - radius), spring - Math.sin(a) * radius * 2];
+              const start = [pose.x + side * (2 * radius * Math.cos(a) - radius), pose.spring - Math.sin(a) * radius * 2];
               points.push(phasePoint(start, bindingPoint(t), pageRim(folio, leaf, side, t, 3 + inset * 4)));
             }
             trace(points, 1, inset === 1 ? accent : color.line, inset === 1 ? .88 : .45, inset === 1 ? 2.3 : .8);
@@ -789,6 +879,16 @@
       const footer = Number.isFinite(source?.footerY) ? (source.footerY - height / 2) / unit : leaf.bottom;
       return { heading, list, occupied, end, footer };
     }
+    function pageSealPlacement(leaf, writing) {
+      if (!writing.heading || !writing.list || !Number.isFinite(writing.end)) return null;
+      const top = Math.max(writing.end, writing.heading.bottom) + 14 / unit;
+      const bottom = Math.min(writing.footer - 10 / unit, leaf.bottom - 30 / unit);
+      const left = Math.max(leaf.left + 25 / unit, writing.list.left);
+      const right = Math.min(leaf.right - 25 / unit, writing.list.right);
+      const radius = Math.min(78 / unit, (right - left) * .34, (bottom - top) / 2.22);
+      if (radius * unit < 23) return null;
+      return { x: (left + right) / 2, y: (top + bottom - radius * .17) / 2, radius };
+    }
     function manuscriptSeal(x, y, radius, index, amount) {
       if (amount <= 0) return;
       const ring = smooth(section(amount, 0, .40));
@@ -808,7 +908,7 @@
           const a = petal * TAU / 6 - Math.PI / 2;
           const q = smooth(section(amount, .16 + petal * .027, .62 + petal * .032));
           const cx = x + Math.cos(a) * radius * .33, cy = y + Math.sin(a) * radius * .33;
-          arc(cx, cy, radius * .33, a + Math.PI, a + Math.PI + TAU * q, accent, .76, .9 / unit);
+          arc(cx, cy, radius * .33, a + Math.PI, a + Math.PI + TAU * q, accent, .82, 1.1 / unit);
           trace([[x + Math.cos(a) * radius * .70, y + Math.sin(a) * radius * .70],
             [x + Math.cos(a) * radius * .83, y + Math.sin(a) * radius * .83]], figure, color.ink, .75, 1.05 / unit);
         }
@@ -824,7 +924,7 @@
             return [x + Math.cos(a) * radius * .76, y + Math.sin(a) * radius * .76];
           });
           trace(points, smooth(section(amount, .15 + weave * .10, .61 + weave * .12)),
-            weave ? color.ink : accent, weave ? .72 : .83, (weave ? 1.25 : .85) / unit);
+            weave ? color.ink : accent, weave ? .80 : .89, (weave ? 1.75 : 1.15) / unit);
         }
         const lens = smooth(section(amount, .32, .86)), r = radius * .43;
         arc(x - r / 2, y, r, -Math.PI / 3, -Math.PI / 3 + Math.PI * 2 / 3 * lens, accent, .85, 1 / unit);
@@ -838,6 +938,32 @@
         const xx = x + Math.cos(a) * r, yy = y + Math.sin(a) * r;
         const size = radius * (point % 2 ? .021 : .038) * q;
         if (size > 0) diamond(xx, yy, size, point % 2 ? accent : color.ink, .85);
+      }
+      // Alternating lancets and inset lozenges enrich the same seal at both
+      // scales: the identity imprint and its expanded illuminated page mark.
+      const bays = index ? 8 : 6;
+      for (let bay = 0; bay < bays; bay++) {
+        const a = (bay + .5) * TAU / bays - Math.PI / 2;
+        const q = smooth(section(amount, .42 + bay % 4 * .035, .81 + bay % 4 * .04));
+        const polar = (distance, turn = 0) => [x + Math.cos(a + turn) * radius * distance,
+          y + Math.sin(a + turn) * radius * distance];
+        trace([polar(.69), polar(.81, -.065), polar(.89), polar(.81, .065), polar(.69)],
+          q, bay % 2 ? accent : color.ink, .68, .7 / unit);
+        trace([polar(.76), polar(.85)], q, accent, .8, .65 / unit);
+      }
+      // Four ink-cut pinnacles make the theological structure readable at a
+      // normal window size. Tiny fore-edge clasps keep their simple circlet.
+      const facets = lock * smooth(section(radius * unit, 14, 27));
+      if (facets > 0) {
+        for (let pinnacle = 0; pinnacle < 4; pinnacle++) {
+          const a = pinnacle * TAU / 4 - Math.PI / 2;
+          const local = [[.68, 0], [lerp(.68, .81, facets), -.088 * facets],
+            [lerp(.68, .90, facets), 0], [lerp(.68, .81, facets), .088 * facets], [.75, 0]];
+          polygon(local.map(([xx, yy]) => [x + radius * (xx * Math.cos(a) - yy * Math.sin(a)),
+            y + radius * (xx * Math.sin(a) + yy * Math.cos(a))]), pinnacle % 2 ? color.ink : accent, .89);
+          trace([[x + Math.cos(a) * radius * .75, y + Math.sin(a) * radius * .75],
+            [x + Math.cos(a) * radius * .84, y + Math.sin(a) * radius * .84]], facets, color.white, .91, .75 / unit);
+        }
       }
       diamond(x, y, radius * .058 * lock, accent, .9, false);
       // A pair of short colophon rules gives the circular mark a manuscript
@@ -855,7 +981,6 @@
       const delay = index * .045;
       const border = smooth(section(bookAge, 1.15 + delay, 1.65 + delay));
       const header = smooth(section(bookAge, 1.45 + delay, 1.95 + delay));
-      const seal = smooth(section(bookAge, 1.65 + delay, 2.45 + delay));
       if (border <= 0) return;
       // All illumination shares two hard, independently clipped writing
       // exclusions. Overlapping rectangles must never cancel each other out.
@@ -876,6 +1001,12 @@
               q, knot % 2 ? color.ink : accent, .79, .75 / unit);
             trace([[railX - side * railWidth, yy - span * 1.25], [railX + side * railWidth, yy - span * .55]],
               q, color.line, .84, .65 / unit);
+            if (widthPx >= 220) {
+              trace([[railX, yy - span * .43], [railX - side * railWidth * .45, yy],
+                [railX, yy + span * .43], [railX + side * railWidth * .45, yy], [railX, yy - span * .43]],
+                q, accent, .84, .65 / unit);
+              if (knot % 2 === 0) diamond(railX, yy, 1.7 * q / unit, accent, .87);
+            }
           }
         }
         // Running heads use only the measured top padding. At compact and
@@ -904,18 +1035,47 @@
           trace([[center - 3 / unit, yy], [center, yy - 3 / unit], [center + 3 / unit, yy],
             [center, yy + 3 / unit], [center - 3 / unit, yy]], header, color.ink, .85, .8 / unit);
         }
-        if (!writing.heading || !writing.list || !Number.isFinite(writing.end) || seal <= 0) return;
-        const blankTop = Math.max(writing.end, writing.heading.bottom) + 14 / unit;
-        const blankBottom = Math.min(writing.footer - 10 / unit, leaf.bottom - 30 / unit);
-        const blankLeft = Math.max(leaf.left + 25 / unit, writing.list.left);
-        const blankRight = Math.min(leaf.right - 25 / unit, writing.list.right);
-        // Never reserve space away from data: a long inventory gets the full
-        // page. The seal simply vanishes when there is no genuine lower gap.
-        const radius = Math.min(78 / unit, (blankRight - blankLeft) * .34, (blankBottom - blankTop) / 2.22);
-        if (radius * unit < 23) return;
-        const sealX = (blankLeft + blankRight) / 2;
-        const sealY = (blankTop + blankBottom - radius * .17) / 2;
-        manuscriptSeal(sealX, sealY, radius, index, seal);
+      }, 6 / unit);
+    }
+    function folioSealMigration(folio) {
+      const source = sourceIdentity || { left: -W * .24, right: W * .24, top: atY(.43), bottom: atY(.72) };
+      const sourceProgress = clamp(finite(state.bookSource?.progress, 1));
+      const writing = folio.leaves.map(pageWriting);
+      // Establish the screen-space text exclusions before any local seal
+      // rotation. Transforming the holes with a flying mark would expose text.
+      outside(writing.flatMap(page => [page.heading, page.occupied]), () => {
+        folio.leaves.forEach((leaf, index) => {
+          const side = index ? 1 : -1, edge = index ? leaf.right : leaf.left;
+          const seed = identitySealAnchor(source, sourceProgress, index);
+          const available = Math.max(0, W / 2 - Math.abs(edge));
+          const margin = Math.min(24 / unit, available * .54);
+          const outerX = edge + side * margin;
+          // A dense leaf keeps its writing area. Its migrating seal becomes
+          // a small fore-edge clasp instead of disappearing behind real rows.
+          const clasp = {
+            x: outerX, y: leaf.bottom - 29 / unit,
+            radius: Math.max(.5 / unit, Math.min(8 / unit, available * .27)),
+          };
+          // Live discovery can change the remaining space on every SSE row.
+          // Keep the moving imprint parked at the fixed clasp until results
+          // are registered; the completed list then owns one deliberate move.
+          const preview = !inventory.status || inventory.status === 'idle';
+          const register = preview ? 1 : phase === 4 && inventory.status === 'complete' ?
+            (reduced ? 1 : smooth(section(progress, .15, .82))) : 0;
+          const space = pageSealPlacement(leaf, writing[index]);
+          const target = space ? { x: lerp(clasp.x, space.x, register), y: lerp(clasp.y, space.y, register),
+            radius: lerp(clasp.radius, space.radius, register) } : clasp;
+          const gather = smooth(section(bookAge, 0, .82 + index * .055));
+          const settle = smooth(section(bookAge, .73 + index * .04, 2.42 + index * .08));
+          const enlarge = smooth(section(bookAge, .82 + index * .045, 2.53 + index * .08));
+          const xx = lerp(lerp(seed.x, outerX, gather), target.x, settle);
+          const yy = lerp(seed.y, target.y, gather);
+          const turn = lerp(seed.turn, 0, settle) + side * Math.sin(gather * Math.PI) * (1 - settle) * Math.PI * .95;
+          const amount = lerp(seed.amount, 1, smooth(section(bookAge, 0, .58)));
+          ctx.save(); ctx.translate(xx, yy); ctx.rotate(turn);
+          manuscriptSeal(0, 0, lerp(seed.radius, target.radius, enlarge), index, amount);
+          ctx.restore();
+        });
       }, 6 / unit);
     }
     function codexLeaves(folio) {
@@ -997,6 +1157,7 @@
       codexCovers(folio);
       folioConstruction(folio);
       codexLeaves(folio);
+      folioSealMigration(folio);
       if (complete) {
         const arrival = reduced ? 1 : smooth(section(progress, .12, .75));
         const stampX = folio.leaves[1].right - 27, stampY = folio.bottom + 30;
@@ -1018,6 +1179,7 @@
       const x = wide ? -W * .26 + parallax.x * .3 : parallax.x * .3;
       const y = (wide ? atY(.45) : atY(.355)) + parallax.y * .3, radius = wide ? 171 : 172;
       ctx.save(); ctx.translate(x, y); ctx.rotate(gesture * .45);
+      hingedHalo(0, 0, radius * 1.40, section(progress, .03, .91), true);
       interlace(0, 0, radius * 1.13, section(progress, .07, .85), .80, Math.PI / 8);
       rose(0, 0, radius * 1.02, section(progress, .17, .91), .64);
       vesica(0, 0, radius, progress, .70); ctx.restore();
