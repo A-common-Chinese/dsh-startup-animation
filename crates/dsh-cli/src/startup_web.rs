@@ -1,0 +1,1642 @@
+//! Same-origin loopback hosts for the startup preview and the actual Harness runtime.
+use anyhow::{bail, Context, Result};
+use dsh_core::{
+    load_startup_profile, set_next_startup, EventStore, Runtime,
+};
+#[cfg(test)]
+use dsh_core::{save_startup_profile, StartupProfile};
+use serde_json::{json, Value};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{TcpListener, TcpStream},
+    sync::{watch, Mutex, Semaphore},
+};
+
+struct Host {
+    access: Mutex<crate::web_access::Sessions>,
+    password_work: Semaphore,
+    workspace: PathBuf,
+    outer_home: PathBuf,
+    roots: Vec<PathBuf>,
+    authority: String,
+    token: String,
+    sound: bool,
+    inventory: Mutex<Option<crate::startup_inventory::LoadedInventory>>,
+    runtime: Option<Arc<Runtime>>,
+    assets: Option<PathBuf>,
+    startup_override: Option<bool>,
+    service: Option<HarnessService>,
+}
+
+struct HarnessService {
+    instance_id: String,
+    control_token: String,
+    shutdown: watch::Sender<bool>,
+}
+
+impl HarnessService {
+    fn new() -> Self {
+        Self {
+            instance_id: uuid::Uuid::new_v4().to_string(),
+            control_token: uuid::Uuid::new_v4().to_string(),
+            shutdown: watch::channel(false).0,
+        }
+    }
+}
+
+pub async fn serve(
+    workspace: PathBuf,
+    outer_home: PathBuf,
+    roots: Vec<PathBuf>,
+    port: u16,
+    sound: bool,
+) -> Result<()> {
+    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
+        .await
+        .context("bind startup preview (choose another --port if it is in use)")?;
+    let authority = listener.local_addr()?.to_string();
+    println!("DSH local startup: http://{authority}/startup-preview.html");
+    println!("Workspace: {}\nCtrl+C to stop. Skills/plugins are loaded only when the loading scene starts.", workspace.display());
+    let host = Arc::new(Host {
+        access: Mutex::new(crate::web_access::Sessions::default()),
+        password_work: Semaphore::new(1),
+        workspace,
+        outer_home,
+        roots,
+        authority,
+        token: uuid::Uuid::new_v4().to_string(),
+        sound,
+        inventory: Mutex::new(None),
+        runtime: None,
+        assets: None,
+        startup_override: None,
+        service: None,
+    });
+    accept_connections(listener, host).await
+}
+
+/// Attach a web frontend to the already booted CLI runtime. This does not load
+/// a second agent, start another scheduler, or consume the next-CLI preference.
+pub async fn serve_harness(
+    runtime: Arc<Runtime>,
+    listener: TcpListener,
+    assets: Option<PathBuf>,
+    startup_override: Option<bool>,
+    open_browser: bool,
+) -> Result<()> {
+    let assets = locate_frontend_assets(assets.as_deref())?;
+    anyhow::ensure!(listener.local_addr()?.ip().is_loopback(), "Harness listener must bind to loopback");
+    let authority = listener.local_addr()?.to_string();
+    let url = crate::web_launch::launch_url(&authority, startup_override);
+    println!("DSH Harness: {url}");
+    println!(
+        "Workspace: {}\nCtrl+C to stop.",
+        runtime.workspace_root.display()
+    );
+    let host = Arc::new(Host {
+        access: Mutex::new(crate::web_access::Sessions::default()),
+        password_work: Semaphore::new(1),
+        workspace: runtime.workspace_root.clone(),
+        outer_home: runtime.outer_home.clone(),
+        roots: vec![],
+        authority,
+        token: uuid::Uuid::new_v4().to_string(),
+        sound: runtime.config.tui.startup.sound,
+        inventory: Mutex::new(None),
+        runtime: Some(runtime),
+        assets: Some(assets),
+        startup_override,
+        service: Some(HarnessService::new()),
+    });
+    if open_browser {
+        if let Err(error) = crate::web_launch::open_browser(&url) {
+            eprintln!("Could not open the browser: {error}. Open {url} manually.");
+        }
+    }
+    accept_connections(listener, host).await
+}
+
+/// Check a requested installation before the launcher stops an existing host.
+pub fn validate_frontend_assets(assets: Option<&Path>) -> Result<()> {
+    locate_frontend_assets(assets).map(|_| ())
+}
+
+fn locate_frontend_assets(assets: Option<&Path>) -> Result<PathBuf> {
+    let cwd = std::env::current_dir().context("locate the current directory for Harness assets")?;
+    let executable = std::env::current_exe().ok();
+    resolve_harness_assets(assets, executable.as_deref(), &cwd)
+}
+
+fn validate_harness_assets(path: &Path) -> Result<PathBuf> {
+    let assets = path
+        .canonicalize()
+        .with_context(|| format!("Harness assets unavailable at {}", path.display()))?;
+    anyhow::ensure!(
+        assets.is_dir() && assets.join("index.html").is_file(),
+        "Harness assets at {} must be a directory containing index.html",
+        path.display()
+    );
+    Ok(assets)
+}
+
+fn resolve_harness_assets(
+    explicit: Option<&Path>,
+    executable: Option<&Path>,
+    cwd: &Path,
+) -> Result<PathBuf> {
+    // An explicit override must fail visibly, even when other assets exist.
+    if let Some(path) = explicit {
+        return validate_harness_assets(&cwd.join(path));
+    }
+
+    let mut candidates = Vec::new();
+    if let Some(root) = executable.and_then(Path::parent).and_then(Path::parent) {
+        // Cargo-style install: <root>/bin/dsh and <root>/share/dsh/web.
+        candidates.push(root.join("share/dsh/web"));
+    }
+    candidates.push(cwd.join("web/dist"));
+
+    let mut failures = Vec::new();
+    for candidate in candidates {
+        match validate_harness_assets(&candidate) {
+            Ok(assets) => return Ok(assets),
+            Err(error) => failures.push(format!("{error:#}")),
+        }
+    }
+    bail!(
+        "Harness frontend was not found. Install the frontend alongside dsh, run npm --prefix web run build in the repository, or use --assets. Checked:\n{}",
+        failures.join("\n")
+    )
+}
+
+async fn accept_connections(listener: TcpListener, host: Arc<Host>) -> Result<()> {
+    let _control = host.service.as_ref().map(|service| crate::web_access::ControlRegistration::create(&host.authority, &service.instance_id, &service.control_token)).transpose()?;
+    let permits = Arc::new(Semaphore::new(64));
+    let mut shutdown = host.service.as_ref().map(|service| service.shutdown.subscribe());
+    loop {
+        // Watch retains a shutdown requested before this loop subscribed.
+        if shutdown.as_ref().is_some_and(|receiver| *receiver.borrow()) {
+            return Ok(());
+        }
+        tokio::select! {
+            accepted = listener.accept() => {
+                let (socket, _) = accepted?;
+                let Ok(permit) = permits.clone().try_acquire_owned() else { drop(socket); continue; };
+                let host = host.clone();
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    if let Err(error) = tokio::time::timeout(Duration::from_secs(130), handle(socket, host)).await { tracing::debug!(%error, "web connection timed out"); }
+                });
+            }
+            _ = async {
+                match shutdown.as_mut() {
+                    Some(receiver) => { let _ = receiver.changed().await; }
+                    None => std::future::pending::<()>().await,
+                }
+            } => return Ok(()),
+            _ = tokio::signal::ctrl_c() => return Ok(()),
+        }
+    }
+}
+
+struct Request {
+    method: String,
+    path: String,
+    headers: HashMap<String, String>,
+    body: Vec<u8>,
+}
+
+async fn read_request(socket: &mut TcpStream) -> Result<Request> {
+    let mut bytes = Vec::new();
+    let boundary = loop {
+        let mut chunk = [0u8; 2048];
+        let n = socket.read(&mut chunk).await?;
+        if n == 0 {
+            bail!("incomplete request");
+        }
+        bytes.extend_from_slice(&chunk[..n]);
+        if let Some(i) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+            break i + 4;
+        }
+        if bytes.len() > 16384 {
+            bail!("request headers too large");
+        }
+    };
+    if boundary > 16384 {
+        bail!("request headers too large");
+    }
+    let header = std::str::from_utf8(&bytes[..boundary])?;
+    let mut lines = header.split("\r\n");
+    let mut first = lines.next().unwrap_or("").split_whitespace();
+    let method = first.next().context("missing method")?.to_string();
+    let path = first.next().context("missing path")?.to_string();
+    let mut headers = HashMap::new();
+    for line in lines.filter(|l| !l.is_empty()) {
+        let (name, value) = line.split_once(':').context("invalid header")?;
+        if headers
+            .insert(name.to_ascii_lowercase(), value.trim().to_string())
+            .is_some()
+        {
+            bail!("duplicate header");
+        }
+    }
+    if headers.contains_key("transfer-encoding") {
+        bail!("chunked requests are unsupported");
+    }
+    let length = headers
+        .get("content-length")
+        .map(|v| v.parse::<usize>())
+        .transpose()?
+        .unwrap_or(0);
+    if length > 1024 * 1024 {
+        bail!("request body too large");
+    }
+    while bytes.len() < boundary + length {
+        let mut chunk = [0u8; 2048];
+        let n = socket.read(&mut chunk).await?;
+        if n == 0 {
+            bail!("incomplete body");
+        }
+        bytes.extend_from_slice(&chunk[..n]);
+    }
+    Ok(Request {
+        method,
+        path,
+        headers,
+        body: bytes[boundary..boundary + length].to_vec(),
+    })
+}
+
+async fn response(socket: &mut TcpStream, code: u16, kind: &str, body: &[u8]) -> Result<()> {
+    response_cookie(socket, code, kind, body, None).await
+}
+
+async fn response_cookie(socket: &mut TcpStream, code: u16, kind: &str, body: &[u8], cookie: Option<&str>) -> Result<()> {
+    let reason = match code {
+        200 => "OK",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        409 => "Conflict",
+        429 => "Too Many Requests",
+        503 => "Service Unavailable",
+        _ => "Error",
+    };
+    let cookie = cookie.map(|value| format!("Set-Cookie: {value}\r\n")).unwrap_or_default();
+    let head = format!("HTTP/1.1 {code} {reason}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nCross-Origin-Resource-Policy: same-origin\r\nReferrer-Policy: no-referrer\r\n{cookie}Connection: close\r\n\r\n", body.len());
+    socket.write_all(head.as_bytes()).await?;
+    socket.write_all(body).await?;
+    socket.shutdown().await?;
+    Ok(())
+}
+
+async fn json_response(socket: &mut TcpStream, code: u16, value: Value) -> Result<()> {
+    response(
+        socket,
+        code,
+        "application/json; charset=utf-8",
+        &serde_json::to_vec(&value)?,
+    )
+    .await
+}
+
+fn allowed(request: &Request, host: &Host) -> bool {
+    let Some(authority) = request.headers.get("host") else {
+        return false;
+    };
+    let localhost = format!(
+        "localhost:{}",
+        host.authority.rsplit(':').next().unwrap_or_default()
+    );
+    if authority != &host.authority && authority != &localhost {
+        return false;
+    }
+    if request
+        .headers
+        .get("origin")
+        .is_some_and(|o| o != &format!("http://{authority}"))
+    {
+        return false;
+    }
+    if request
+        .headers
+        .get("sec-fetch-site")
+        .is_some_and(|s| s != "same-origin" && s != "none")
+    {
+        return false;
+    }
+    let requires_token = request.method == "POST"
+        || request.path.split('?').next() == Some("/api/harness/service");
+    !requires_token || request.headers.get("x-dsh-token") == Some(&host.token) || control_request(request, host)
+}
+
+fn control_request(request: &Request, host: &Host) -> bool {
+    matches!(request.path.split('?').next(), Some("/api/harness/service" | "/api/harness/shutdown"))
+        && host.service.as_ref().is_some_and(|service| request.headers.get("x-dsh-token") == Some(&service.control_token))
+}
+
+fn cookie_name(host: &Host) -> String {
+    format!("dsh_access_{}", host.authority.rsplit(':').next().unwrap_or_default())
+}
+
+fn session_cookie<'a>(request: &'a Request, host: &Host) -> Option<&'a str> {
+    let name = cookie_name(host);
+    request.headers.get("cookie")?.split(';').filter_map(|part| part.trim().split_once('=')).find_map(|(key, value)| (key == name).then_some(value))
+}
+
+fn cookie_header(host: &Host, token: Option<&str>) -> String {
+    let age = if token.is_some() { "" } else { "; Max-Age=0" };
+    format!("{}={}; Path=/; HttpOnly; SameSite=Strict{age}", cookie_name(host), token.unwrap_or_default())
+}
+
+fn access_value(host: &Host, enabled: bool, unlocked: bool) -> Result<Value> {
+    let startup = host.runtime.as_ref().map(|runtime| &runtime.config.tui.startup);
+    Ok(json!({"enabled":enabled,"unlocked":unlocked,"token":host.token,"profile":load_startup_profile(&host.outer_home)?,"sound":host.sound,
+        "startup":{"enabled":startup.is_some_and(|value| value.enabled),"override_enabled":host.startup_override,"reduced_motion":startup.is_some_and(|value| value.reduced_motion),"sound":host.sound}}))
+}
+
+async fn access_locked(socket: &mut TcpStream) -> Result<()> {
+    json_response(socket, 401, json!({"error":{"code":"access_locked","message":"请先输入访问密码"}})).await
+}
+
+fn asset(path: &str) -> Option<(&'static str, &'static str)> {
+    match path.split('?').next().unwrap_or(path) {
+        "/" | "/startup-preview.html" => Some((
+            "text/html; charset=utf-8",
+            include_str!("../../../docs/startup-preview.html"),
+        )),
+        "/startup-preview.js" => Some((
+            "text/javascript; charset=utf-8",
+            include_str!("../../../docs/startup-preview.js"),
+        )),
+        "/startup-sequence.js" => Some((
+            "text/javascript; charset=utf-8",
+            include_str!("../../../docs/startup-sequence.js"),
+        )),
+        "/startup-identity.js" => Some((
+            "text/javascript; charset=utf-8",
+            include_str!("../../../docs/startup-identity.js"),
+        )),
+        "/startup-text.js" => Some((
+            "text/javascript; charset=utf-8",
+            include_str!("../../../docs/startup-text.js"),
+        )),
+        "/startup-emblem.js" => Some((
+            "text/javascript; charset=utf-8",
+            include_str!("../../../docs/startup-emblem.js"),
+        )),
+        "/startup-laterano-emblem.js" => Some((
+            "text/javascript; charset=utf-8",
+            include_str!("../../../docs/startup-laterano-emblem.js"),
+        )),
+        "/startup-laterano-ornaments.js" => Some((
+            "text/javascript; charset=utf-8",
+            include_str!("../../../docs/startup-laterano-ornaments.js"),
+        )),
+        "/startup-laterano.js" => Some((
+            "text/javascript; charset=utf-8",
+            include_str!("../../../docs/startup-laterano.js"),
+        )),
+        "/startup-laterano.css" => Some((
+            "text/css; charset=utf-8",
+            include_str!("../../../docs/startup-laterano.css"),
+        )),
+        "/startup-visuals.js" => Some((
+            "text/javascript; charset=utf-8",
+            include_str!("../../../docs/startup-visuals.js"),
+        )),
+        "/startup-local.js" => Some((
+            "text/javascript; charset=utf-8",
+            include_str!("../../../docs/startup-local.js"),
+        )),
+        "/startup-voice.js" => Some((
+            "text/javascript; charset=utf-8",
+            include_str!("../../../docs/startup-voice.js"),
+        )),
+        "/startup-embed.js" => Some((
+            "text/javascript; charset=utf-8",
+            include_str!("../../../docs/startup-embed.js"),
+        )),
+        _ => None,
+    }
+}
+
+fn audio_asset(path: &str) -> Option<&'static [u8]> {
+    Some(match path {
+        "/assets/voice/phase-0.wav" => include_bytes!("../../../docs/assets/voice/phase-0.wav"),
+        "/assets/voice/phase-1.wav" => include_bytes!("../../../docs/assets/voice/phase-1.wav"),
+        "/assets/voice/phase-2.wav" => include_bytes!("../../../docs/assets/voice/phase-2.wav"),
+        "/assets/voice/phase-3.wav" => include_bytes!("../../../docs/assets/voice/phase-3.wav"),
+        "/assets/voice/phase-3-mounted.wav" => {
+            include_bytes!("../../../docs/assets/voice/phase-3-mounted.wav")
+        }
+        "/assets/voice/phase-4.wav" => include_bytes!("../../../docs/assets/voice/phase-4.wav"),
+        "/assets/voice/phase-5.wav" => include_bytes!("../../../docs/assets/voice/phase-5.wav"),
+        "/assets/voice/load-warning.wav" => {
+            include_bytes!("../../../docs/assets/voice/load-warning.wav")
+        }
+        "/assets/voice/load-unavailable.wav" => {
+            include_bytes!("../../../docs/assets/voice/load-unavailable.wav")
+        }
+        _ => return None,
+    })
+}
+
+fn font_asset(path: &str) -> Option<(&'static str, &'static [u8])> {
+    match path.split('?').next().unwrap_or(path) {
+        "/assets/fonts/dsh-industrial-sc.woff2" => Some((
+            "font/woff2",
+            include_bytes!("../../../docs/assets/fonts/dsh-industrial-sc.woff2"),
+        )),
+        "/assets/fonts/OFL-NotoSansSC.txt" => Some((
+            "text/plain; charset=utf-8",
+            include_bytes!("../../../docs/assets/fonts/OFL-NotoSansSC.txt"),
+        )),
+        _ => None,
+    }
+}
+
+fn mounted_inventory(runtime: &Runtime) -> Value {
+    let started = std::time::Instant::now();
+    let skills = runtime.skills.read().clone();
+    let plugins = runtime.plugins.read().clone();
+    let mut issues = Vec::new();
+    if skills.is_none() {
+        issues.push(json!({"kind":"skill","name":"catalog","message":"Skill catalog is not attached to this runtime"}));
+    }
+    if plugins.is_none() {
+        issues.push(json!({"kind":"plugin","name":"registry","message":"Plugin registry is not attached to this runtime"}));
+    }
+    let skill_items: Vec<_> = skills.map(|catalog| catalog.list()).unwrap_or_default().into_iter().map(|skill| json!({
+        "name":skill.name,"description":skill.description,"source":skill.path.to_string_lossy().replace('\\', "/"),"status":"loaded",
+    })).collect();
+    let definitions = runtime.tools.definitions();
+    let plugin_items: Vec<_> = plugins
+        .map(|registry| registry.routing_summaries())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|plugin| {
+            let tool_count = definitions
+                .iter()
+                .filter(|tool| tool.plugin_id.as_deref() == Some(plugin.id.as_str()))
+                .count();
+            json!({"id":plugin.id,"name":plugin.name,"tool_count":tool_count,"status":"loaded"})
+        })
+        .collect();
+    json!({"type":"complete","skills":skill_items,"plugins":plugin_items,"issues":issues,"elapsed_ms":started.elapsed().as_millis(),"inventory_mode":"mounted"})
+}
+
+fn peek_next_startup(outer_home: &Path) -> Result<Option<bool>> {
+    // The writer replaces this marker atomically. Reading it must never claim
+    // or delete it; only a successfully prepared interactive CLI may consume it.
+    match std::fs::read_to_string(outer_home.join("startup-next.txt")) {
+        Ok(text) => match text.trim() {
+            "on" => Ok(Some(true)),
+            "off" => Ok(Some(false)),
+            _ => bail!("invalid next startup preference"),
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).context("read next startup preference"),
+    }
+}
+
+fn bootstrap(host: &Host, runtime: &Runtime) -> Result<Value> {
+    let profile = load_startup_profile(&host.outer_home)?;
+    let model = runtime.llm.config();
+    let inventory = mounted_inventory(runtime);
+    let startup = &runtime.config.tui.startup;
+    Ok(json!({
+        "token":host.token,"workspace":host.workspace,"profile":profile,
+        "model":{"name":model.model,"backend":model.backend.label(),"ready":runtime.llm.is_ready(),"local":model.backend.is_local()},
+        "status":if runtime.llm.is_ready() {"ready"} else {"missing_credentials"},
+        "startup":{"enabled":startup.enabled,"override_enabled":host.startup_override,"next_enabled":peek_next_startup(&host.outer_home)?,"sound":startup.sound,"interactive":startup.interactive,"reduced_motion":startup.reduced_motion},
+        "inventory_mode":"mounted","skills":inventory["skills"],"plugins":inventory["plugins"],"issues":inventory["issues"],
+        "sessions":crate::app_server::session_summaries(runtime, false),"latest_sequence":runtime.events.latest_sequence(),
+    }))
+}
+
+fn decoded_asset_path(raw: &str) -> Result<String> {
+    let raw = raw.split('?').next().unwrap_or(raw);
+    let mut bytes = Vec::with_capacity(raw.len());
+    let mut chars = raw.as_bytes().iter().copied();
+    while let Some(byte) = chars.next() {
+        if byte == b'%' {
+            let high = chars
+                .next()
+                .and_then(|c| (c as char).to_digit(16))
+                .context("invalid path encoding")?;
+            let low = chars
+                .next()
+                .and_then(|c| (c as char).to_digit(16))
+                .context("invalid path encoding")?;
+            bytes.push((high * 16 + low) as u8);
+        } else {
+            bytes.push(byte);
+        }
+    }
+    let path = String::from_utf8(bytes).context("invalid path encoding")?;
+    anyhow::ensure!(
+        path.starts_with('/')
+            && !path.contains(['\\', ':', '%'])
+            && !path.chars().any(char::is_control),
+        "invalid asset path"
+    );
+    anyhow::ensure!(
+        !path.split('/').any(|part| part.starts_with('.')),
+        "hidden and relative paths are not assets"
+    );
+    Ok(path)
+}
+
+fn static_asset(root: &Path, raw: &str) -> Result<Option<(String, Vec<u8>)>> {
+    let path = decoded_asset_path(raw)?;
+    let relative = path.trim_start_matches('/');
+    let candidate = root.join(if relative.is_empty() {
+        "index.html"
+    } else {
+        relative
+    });
+    let candidate = match candidate.canonicalize() {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).context("resolve static asset"),
+    };
+    anyhow::ensure!(
+        candidate.starts_with(root) && candidate.is_file(),
+        "asset is outside the static directory"
+    );
+    anyhow::ensure!(
+        candidate.metadata()?.len() <= 32 * 1024 * 1024,
+        "asset exceeds size limit"
+    );
+    let mime = match candidate
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default()
+    {
+        "html" => "text/html; charset=utf-8",
+        "js" | "mjs" => "text/javascript; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "json" | "map" => "application/json; charset=utf-8",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "ico" => "image/x-icon",
+        "woff2" => "font/woff2",
+        "wav" => "audio/wav",
+        _ => "application/octet-stream",
+    };
+    Ok(Some((mime.into(), std::fs::read(candidate)?)))
+}
+
+async fn handle(mut socket: TcpStream, host: Arc<Host>) -> Result<()> {
+    let request =
+        match tokio::time::timeout(Duration::from_secs(10), read_request(&mut socket)).await {
+            Ok(Ok(r)) => r,
+            _ => return json_response(&mut socket, 400, json!({"error":"Invalid request"})).await,
+        };
+    if !allowed(&request, &host) {
+        return json_response(
+            &mut socket,
+            403,
+            json!({"error":"Local same-origin request required"}),
+        )
+        .await;
+    }
+    let path = request.path.split('?').next().unwrap_or(&request.path);
+    if path.starts_with("/api/") {
+        let hash = match crate::web_access::load(&host.outer_home) {
+            Ok(hash) => hash,
+            Err(_) => return json_response(&mut socket, 503, json!({"error":{"code":"access_unavailable","message":"无法读取本地访问设置"}})).await,
+        };
+        let cookie = session_cookie(&request, &host);
+        let unlocked = host.access.lock().await.unlocked(hash.as_deref(), cookie);
+        if request.method == "GET" && path == "/api/access" {
+            return json_response(&mut socket, 200, access_value(&host, hash.is_some(), unlocked)?).await;
+        }
+        if request.method == "POST" && path == "/api/access/lock" {
+            host.access.lock().await.revoke(cookie);
+            if unlocked {
+                if let Some(runtime) = &host.runtime { runtime.computer.hide_pointer(); }
+            }
+            return response_cookie(&mut socket, 200, "application/json; charset=utf-8", &serde_json::to_vec(&access_value(&host, hash.is_some(), hash.is_none())?)?, Some(&cookie_header(&host, None))).await;
+        }
+        if request.method == "POST" && matches!(path, "/api/access/unlock" | "/api/access/password") {
+            if path == "/api/access/password" && !unlocked {
+                return access_locked(&mut socket).await;
+            }
+            let payload: Value = match serde_json::from_slice(&request.body) {
+                Ok(payload) => payload,
+                Err(_) => return json_response(&mut socket, 400, json!({"error":{"message":"Invalid JSON request"}})).await,
+            };
+            let Some(password) = payload.get("password").and_then(Value::as_str).filter(|value| value.len() <= 512) else {
+                return json_response(&mut socket, 400, json!({"error":{"message":"password must be a string of at most 128 characters"}})).await;
+            };
+            let changing = path == "/api/access/password";
+            if changing && !password.is_empty() {
+                if let Err(error) = crate::web_access::validate_password(password) {
+                    return json_response(&mut socket, 400, json!({"error":{"message":error.to_string()}})).await;
+                }
+            }
+            let _work = match host.password_work.try_acquire() {
+                Ok(permit) if !host.access.lock().await.cooling_down() => permit,
+                _ => return json_response(&mut socket, 429, json!({"error":{"code":"access_retry","message":"请稍候一秒再试"}})).await,
+            };
+            let password = password.to_owned();
+            let current = payload.get("current_password").and_then(Value::as_str).unwrap_or_default().to_owned();
+            let previous = hash.clone();
+            let home = host.outer_home.clone();
+            let result = tokio::task::spawn_blocking(move || -> Result<Option<Option<String>>> {
+                let verify_password = if changing { &current } else { &password };
+                if previous.as_ref().is_some_and(|hash| !crate::web_access::verify(verify_password, hash)) { return Ok(None); }
+                if changing {
+                    let replacement = if password.is_empty() { None } else { Some(crate::web_access::hash(&password)?) };
+                    crate::web_access::save(&home, previous.as_deref(), replacement.clone())?;
+                    Ok(Some(replacement))
+                } else {
+                    // A concurrent password change cannot issue a session for an old password.
+                    anyhow::ensure!(crate::web_access::load(&home)? == previous, "访问设置已更新，请重试");
+                    Ok(Some(previous))
+                }
+            }).await?;
+            return match result {
+                Ok(Some(hash)) => {
+                    let token = host.access.lock().await.issue(hash.as_deref());
+                    response_cookie(&mut socket, 200, "application/json; charset=utf-8", &serde_json::to_vec(&access_value(&host, hash.is_some(), true)?)?, Some(&cookie_header(&host, Some(&token)))).await
+                }
+                Ok(None) => {
+                    host.access.lock().await.failure();
+                    json_response(&mut socket, 401, json!({"error":{"code":"invalid_password","message":"密码不正确"}})).await
+                }
+                Err(error) => json_response(&mut socket, 409, json!({"error":{"message":error.to_string()}})).await,
+            };
+        }
+        let discovery = request.method == "GET" && path == "/api/harness/discovery";
+        if !unlocked && !discovery && !control_request(&request, &host) {
+            return access_locked(&mut socket).await;
+        }
+    }
+    match (request.method.as_str(), path) {
+        ("GET", "/api/harness/discovery") if host.runtime.is_some() && host.service.is_some() => {
+            let service = host.service.as_ref().unwrap();
+            json_response(&mut socket, 200, json!({
+                "service":"dsh-harness", "protocol_version":2,
+                "instance_id":service.instance_id, "workspace":host.workspace,
+                "can_shutdown":true,
+            })).await
+        }
+        ("GET", "/api/harness/service") if host.runtime.is_some() && host.service.is_some() => {
+            let service = host.service.as_ref().unwrap();
+            json_response(&mut socket, 200, json!({
+                "service":"dsh-harness", "protocol_version":1,
+                "instance_id":service.instance_id, "pid":std::process::id(),
+                "workspace":host.workspace, "can_shutdown":true,
+            })).await
+        }
+        ("POST", "/api/harness/shutdown") if host.runtime.is_some() && host.service.is_some() => {
+            let payload: Value = match serde_json::from_slice(&request.body) {
+                Ok(value) => value,
+                Err(_) => return json_response(&mut socket, 400, json!({"error":"Invalid JSON request"})).await,
+            };
+            let Some(instance_id) = payload.get("instance_id").and_then(Value::as_str).filter(|value| !value.is_empty()) else {
+                return json_response(&mut socket, 400, json!({"error":"instance_id must be a non-empty string"})).await;
+            };
+            let service = host.service.as_ref().unwrap();
+            if instance_id != service.instance_id {
+                return json_response(&mut socket, 409, json!({"error":"The Harness instance has changed; probe it again before restarting"})).await;
+            }
+            // Finish the acknowledgement before the listener exits and its
+            // owning CLI runtime begins shutdown. send_replace is sticky.
+            json_response(&mut socket, 200, json!({"accepted":true,"instance_id":service.instance_id})).await?;
+            service.shutdown.send_replace(true);
+            Ok(())
+        }
+        ("GET", "/api/harness/bootstrap") if host.runtime.is_some() => {
+            match bootstrap(&host, host.runtime.as_ref().unwrap()) {
+                Ok(value) => json_response(&mut socket, 200, value).await,
+                Err(error) => json_response(&mut socket, 503, json!({"error":{"message":error.to_string()}})).await,
+            }
+        }
+        ("POST", "/api/harness/rpc") if host.runtime.is_some() => {
+            let payload: Value = match serde_json::from_slice(&request.body) {
+                Ok(value) => value,
+                Err(_) => return json_response(&mut socket, 400, json!({"error":{"code":-32700,"message":"Invalid JSON request"}})).await,
+            };
+            let Some(method) = payload.get("method").and_then(Value::as_str).filter(|value| !value.trim().is_empty()) else {
+                return json_response(&mut socket, 400, json!({"error":{"code":-32600,"message":"method must be a non-empty string"}})).await;
+            };
+            let params = payload.get("params").cloned().unwrap_or_else(|| json!({}));
+            if matches!(method, "agent/turn" | "tasks/resume") && params.get("wait") == Some(&Value::Bool(true)) {
+                return json_response(&mut socket, 200, json!({"error":{"code":-32602,"message":"Use wait=false and events/wait to follow web turns"}})).await;
+            }
+            let value = crate::app_server::dispatch_http(host.runtime.as_ref().unwrap().clone(), method, params).await;
+            json_response(&mut socket, 200, value).await
+        }
+        ("POST", "/api/startup-next") => {
+            let result = serde_json::from_slice::<Value>(&request.body).map_err(anyhow::Error::from).and_then(|value| {
+                let enabled = value.get("enabled").and_then(Value::as_bool).context("enabled must be boolean")?;
+                set_next_startup(&host.outer_home, enabled)?;
+                Ok(enabled)
+            });
+            match result {
+                Ok(enabled) => json_response(&mut socket, 200, json!({"enabled":enabled,"scope":"next_cli"})).await,
+                Err(error) => json_response(&mut socket, 400, json!({"error":{"message":error.to_string()}})).await,
+            }
+        }
+        ("GET", "/api/profile") => match load_startup_profile(&host.outer_home) {
+            Ok(profile) => json_response(&mut socket, 200, json!({"username":profile.username,"badge_id":profile.badge_id,"visual_style":profile.visual_style,"token":host.token,"workspace":host.workspace,"mode":"local","sound":host.sound,"inventory_mode":if host.runtime.is_some() {"mounted"} else {"discover"}})).await,
+            Err(e) => json_response(&mut socket, 503, json!({"error":e.to_string()})).await,
+        },
+        ("POST", "/api/profile") => {
+            let result = serde_json::from_slice::<Value>(&request.body).map_err(anyhow::Error::from)
+                .and_then(|value| {
+                    let fields = value.as_object().context("startup profile must be an object")?;
+                    // Validate only supplied fields, including rejecting explicit null.
+                    let username = fields.get("username").cloned().map(serde_json::from_value::<String>).transpose()?;
+                    let badge = fields.get("badge_id").cloned().map(serde_json::from_value::<String>).transpose()?;
+                    let visual_style = fields.get("visual_style").cloned().map(serde_json::from_value::<dsh_core::VisualStyle>).transpose()?;
+                    dsh_core::update_startup_profile(&host.outer_home, |profile| {
+                        if let Some(username) = username { profile.username = username; }
+                        if let Some(badge) = badge { profile.badge_id = badge; }
+                        if let Some(visual_style) = visual_style { profile.visual_style = visual_style; }
+                    })
+                });
+            match result {
+                Ok(profile) => json_response(&mut socket, 200, serde_json::to_value(profile)?).await,
+                Err(e) => json_response(&mut socket, 400, json!({"error":e.to_string()})).await,
+            }
+        }
+        ("POST", "/api/load") => {
+            if let Some(runtime) = &host.runtime {
+                let inventory = mounted_inventory(runtime);
+                let mut bytes = serde_json::to_vec(&inventory)?;
+                bytes.push(b'\n');
+                return response(&mut socket, 200, "application/x-ndjson; charset=utf-8", &bytes).await;
+            }
+            // A cancelled browser stream does not interrupt synchronous catalog
+            // work. A replay waits for it instead of turning overlap into failure.
+            let mut inventory = host.inventory.lock().await;
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson; charset=utf-8\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n").await?;
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
+            let loader_host = host.clone();
+            let worker = tokio::task::spawn_blocking(move || crate::startup_inventory::load(&loader_host.workspace, &loader_host.outer_home, &loader_host.roots, |event| { let _ = tx.send(event); }));
+            let mut connected = true;
+            while let Some(event) = rx.recv().await {
+                if connected {
+                    let mut bytes = serde_json::to_vec(&event)?; bytes.push(b'\n');
+                    connected = socket.write_all(&bytes).await.is_ok();
+                }
+            }
+            // Keep actual mounted catalogs alive for the lifetime of this preview session.
+            match worker.await {
+                Ok(loaded) => *inventory = Some(loaded),
+                Err(e) if connected => { let mut bytes = serde_json::to_vec(&json!({"type":"error","message":format!("Loader stopped: {e}")}))?; bytes.push(b'\n'); socket.write_all(&bytes).await?; }
+                Err(_) => (),
+            }
+            if connected { socket.shutdown().await?; }
+            Ok(())
+        }
+        ("GET", path) => {
+            if path.starts_with("/api/") { return json_response(&mut socket, 404, json!({"error":"Not found"})).await; }
+            if let Some(wav) = audio_asset(path) { return response(&mut socket, 200, "audio/wav", wav).await; }
+            if let Some((kind, bytes)) = font_asset(path) { return response(&mut socket, 200, kind, bytes).await; }
+            if let Some(root) = &host.assets {
+                // The original startup resources remain embedded and available
+                // even when the React asset directory is overridden.
+                if path != "/" { if let Some((kind, body)) = asset(path) { return response(&mut socket, 200, kind, body.as_bytes()).await; } }
+                match static_asset(root, &request.path) {
+                    Ok(Some((kind, body))) => return response(&mut socket, 200, &kind, &body).await,
+                    Err(_) => return json_response(&mut socket, 403, json!({"error":"Invalid asset path"})).await,
+                    Ok(None) => return json_response(&mut socket, 404, json!({"error":"Not found"})).await,
+                }
+            }
+            match asset(path) {
+                Some((kind, body)) => response(&mut socket, 200, kind, body.as_bytes()).await,
+                None => json_response(&mut socket, 404, json!({"error":"Not found"})).await,
+            }
+        },
+        _ => json_response(&mut socket, 404, json!({"error":"Not found"})).await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct AssetFixture(PathBuf);
+
+    impl AssetFixture {
+        fn new() -> Self {
+            let root = std::env::temp_dir().join(format!("dsh-harness-assets-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir(&root).unwrap();
+            Self(root.canonicalize().unwrap())
+        }
+
+        fn frontend(&self, relative: &str) -> PathBuf {
+            let path = self.0.join(relative);
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("index.html"), "<html>fixture</html>").unwrap();
+            path.canonicalize().unwrap()
+        }
+    }
+
+    impl Drop for AssetFixture {
+        fn drop(&mut self) {
+            assert_eq!(self.0.parent(), Some(std::env::temp_dir().canonicalize().unwrap().as_path()));
+            assert!(self.0.file_name().unwrap().to_string_lossy().starts_with("dsh-harness-assets-"));
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn harness_assets_explicit_override_wins_and_is_relative_to_cwd() {
+        let fixture = AssetFixture::new();
+        fixture.frontend("installation/share/dsh/web");
+        fixture.frontend("workspace/web/dist");
+        let custom = fixture.frontend("workspace/custom");
+        let executable = fixture.0.join("installation/bin/dsh.exe");
+        let cwd = fixture.0.join("workspace");
+        assert_eq!(
+            resolve_harness_assets(Some(Path::new("custom")), Some(&executable), &cwd).unwrap(),
+            custom
+        );
+        assert_eq!(
+            resolve_harness_assets(Some(&custom), None, &cwd).unwrap(),
+            custom
+        );
+    }
+
+    #[test]
+    fn harness_assets_installed_frontend_precedes_cwd_development_fallback() {
+        let fixture = AssetFixture::new();
+        let installed = fixture.frontend("installation/share/dsh/web");
+        let development = fixture.frontend("workspace/web/dist");
+        let executable = fixture.0.join("installation/bin/dsh.exe");
+        let cwd = fixture.0.join("workspace");
+        assert_eq!(resolve_harness_assets(None, Some(&executable), &cwd).unwrap(), installed);
+        // The install is also usable from a workspace with no checkout/assets.
+        assert_eq!(
+            resolve_harness_assets(None, Some(&executable), &fixture.0.join("another-workspace")).unwrap(),
+            installed
+        );
+        std::fs::remove_file(installed.join("index.html")).unwrap();
+        assert_eq!(resolve_harness_assets(None, Some(&executable), &cwd).unwrap(), development);
+        assert_eq!(resolve_harness_assets(None, None, &cwd).unwrap(), development);
+    }
+
+    #[test]
+    fn harness_assets_missing_and_invalid_explicit_paths_fail_with_diagnostics() {
+        let fixture = AssetFixture::new();
+        let executable = fixture.0.join("installation/bin/dsh.exe");
+        let cwd = fixture.0.join("workspace");
+        let error = resolve_harness_assets(None, Some(&executable), &cwd).unwrap_err().to_string();
+        assert!(error.contains(&fixture.0.join("installation/share/dsh/web").display().to_string()));
+        assert!(error.contains(&cwd.join("web/dist").display().to_string()));
+        assert!(error.contains("--assets"));
+
+        fixture.frontend("installation/share/dsh/web");
+        fixture.frontend("workspace/web/dist");
+        let empty = cwd.join("empty");
+        std::fs::create_dir(&empty).unwrap();
+        for path in [Path::new("missing"), Path::new("empty")] {
+            let error = resolve_harness_assets(Some(path), Some(&executable), &cwd).unwrap_err().to_string();
+            assert!(error.contains(&cwd.join(path).display().to_string()));
+        }
+    }
+
+    struct TestHost {
+        host: Arc<Host>,
+        task: tokio::task::JoinHandle<()>,
+        root: PathBuf,
+    }
+
+    impl Drop for TestHost {
+        fn drop(&mut self) {
+            self.task.abort();
+            let temp = std::env::temp_dir().canonicalize().unwrap();
+            assert_eq!(self.root.parent(), Some(temp.as_path()));
+            assert!(self
+                .root
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("dsh-harness-http-"));
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    async fn harness(llm_endpoint: Option<String>) -> TestHost {
+        test_host(llm_endpoint, true).await
+    }
+
+    async fn test_host(llm_endpoint: Option<String>, mounted: bool) -> TestHost {
+        let root = std::env::temp_dir().join(format!("dsh-harness-http-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let mut config = dsh_core::AppConfig::builtin_default();
+        config.paths.outer_home = root.join("outer").display().to_string();
+        config.agent.scheduler_enabled = false;
+        config.ctm.enabled = false;
+        let mut llm_config = config.to_llm_config(String::new());
+        if let Some(endpoint) = llm_endpoint {
+            llm_config.base_url = endpoint;
+            llm_config.api_key = "only-local-fixture-secret".into();
+        }
+        let llm = dsh_llm::DeepSeekClient::new(llm_config).unwrap();
+        let tools = Arc::new(dsh_tools::ToolRegistry::new());
+        let runtime = Runtime::bootstrap(config, root.clone(), llm, tools.clone()).unwrap();
+        let skills = Arc::new(dsh_skill::SkillCatalog::new(root.join("meta")));
+        let skill = root.join("http-fixture.md");
+        std::fs::write(
+            &skill,
+            "---\nname: http-fixture\n---\nA real locally mounted fixture",
+        )
+        .unwrap();
+        skills
+            .mount_path(&skill, dsh_skill::SkillSource::Runtime)
+            .unwrap();
+        let plugin = root.join("plugin");
+        std::fs::create_dir(&plugin).unwrap();
+        std::fs::write(plugin.join("plugin.json"), r#"{"id":"fixture","name":"Fixture Plugin","version":"1","tools":[{"name":"echo","description":"real definition"}]}"#).unwrap();
+        let plugins = Arc::new(dsh_plugin::PluginRegistry::new(tools, root.join("meta")));
+        plugins.mount_dir(&plugin).unwrap();
+        *runtime.skills.write() = Some(skills);
+        *runtime.plugins.write() = Some(plugins);
+        let assets = root.join("dist");
+        std::fs::create_dir(&assets).unwrap();
+        std::fs::write(
+            assets.join("index.html"),
+            "<html>Real Harness fixture</html>",
+        )
+        .unwrap();
+        std::fs::write(root.join("secret.txt"), "not a web asset").unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let host = Arc::new(Host {
+            access: Mutex::new(crate::web_access::Sessions::default()),
+            password_work: Semaphore::new(1),
+            workspace: root.clone(),
+            outer_home: runtime.outer_home.clone(),
+            roots: vec![],
+            authority: listener.local_addr().unwrap().to_string(),
+            token: uuid::Uuid::new_v4().to_string(),
+            sound: false,
+            inventory: Mutex::new(None),
+            runtime: mounted.then_some(runtime),
+            assets: mounted.then_some(assets),
+            startup_override: None,
+            service: mounted.then(HarnessService::new),
+        });
+        let shared = host.clone();
+        let task = tokio::spawn(async move {
+            accept_connections(listener, shared).await.unwrap();
+        });
+        TestHost { host, task, root }
+    }
+
+    async fn http(
+        host: &Host,
+        method: &str,
+        path: &str,
+        payload: Value,
+        token: bool,
+    ) -> (u16, Value) {
+        http_with_token(host, method, path, payload, token.then_some(host.token.as_str())).await
+    }
+
+    async fn http_with_token(
+        host: &Host,
+        method: &str,
+        path: &str,
+        payload: Value,
+        token: Option<&str>,
+    ) -> (u16, Value) {
+        let mut socket = TcpStream::connect(&host.authority).await.unwrap();
+        let body = if method == "POST" {
+            serde_json::to_vec(&payload).unwrap()
+        } else {
+            vec![]
+        };
+        let auth = token.map(|token| format!("X-DSH-Token: {token}\r\n")).unwrap_or_default();
+        let headers = format!("{method} {path} HTTP/1.1\r\nHost: {}\r\nOrigin: http://{}\r\n{auth}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",host.authority,host.authority,body.len());
+        socket.write_all(headers.as_bytes()).await.unwrap();
+        socket.write_all(&body).await.unwrap();
+        let mut bytes = Vec::new();
+        tokio::time::timeout(Duration::from_secs(10), socket.read_to_end(&mut bytes))
+            .await
+            .unwrap()
+            .unwrap();
+        let boundary = bytes.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+        let headers = std::str::from_utf8(&bytes[..boundary]).unwrap();
+        let status = headers.split_whitespace().nth(1).unwrap().parse().unwrap();
+        let body = serde_json::from_slice(&bytes[boundary..]).unwrap_or_else(|_| {
+            Value::String(String::from_utf8_lossy(&bytes[boundary..]).into_owned())
+        });
+        (status, body)
+    }
+
+    async fn rpc(host: &Host, method: &str, params: Value) -> Value {
+        let (status, value) = http(
+            host,
+            "POST",
+            "/api/harness/rpc",
+            json!({"method":method,"params":params}),
+            true,
+        )
+        .await;
+        assert_eq!(status, 200);
+        value
+    }
+
+    async fn access_http(host: &Host, method: &str, path: &str, payload: Value, cookie: Option<&str>) -> (u16, Value, Option<String>) {
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let mut request = client.request(method.parse().unwrap(), format!("http://{}{path}", host.authority))
+            .header("Origin", format!("http://{}", host.authority)).header("X-DSH-Token", &host.token);
+        if let Some(cookie) = cookie { request = request.header("Cookie", cookie); }
+        if method == "POST" { request = request.json(&payload); }
+        let response = request.send().await.unwrap();
+        let status = response.status().as_u16();
+        let cookie = response.headers().get("set-cookie").map(|value| value.to_str().unwrap().to_owned());
+        (status, response.json().await.unwrap(), cookie)
+    }
+
+    #[tokio::test]
+    async fn profile_style_updates_preserve_identity_and_legacy_edits_preserve_style() {
+        let server = harness(None).await;
+        let host = &server.host;
+        let (status, initial) = http(host, "GET", "/api/profile", Value::Null, false).await;
+        assert_eq!(status, 200);
+        assert_eq!(initial["visual_style"], "rhine");
+        let (status, _) = http(host, "POST", "/api/profile", json!({"username":"Operator","badge_id":"DSH-STYLE"}), true).await;
+        assert_eq!(status, 200);
+        let (status, styled) = http(host, "POST", "/api/profile", json!({"visual_style":"laterano"}), true).await;
+        assert_eq!(status, 200);
+        assert_eq!(styled["username"], "Operator");
+        assert_eq!(styled["badge_id"], "DSH-STYLE");
+        assert_eq!(styled["visual_style"], "laterano");
+        let (status, legacy) = http(host, "POST", "/api/profile", json!({"username":"Renamed operator"}), true).await;
+        assert_eq!(status, 200);
+        assert_eq!(legacy["visual_style"], "laterano");
+        assert_eq!(legacy["badge_id"], "DSH-STYLE");
+        for invalid in [json!({"visual_style":"unknown"}), json!({"visual_style":null}), json!({"visual_style":42}), json!({"username":null}), json!({"badge_id":""})] {
+            assert_eq!(http(host, "POST", "/api/profile", invalid, true).await.0, 400);
+            assert_eq!(serde_json::to_value(load_startup_profile(&host.outer_home).unwrap()).unwrap(), legacy);
+        }
+        let (status, bootstrap) = http(host, "GET", "/api/harness/bootstrap", Value::Null, false).await;
+        assert_eq!(status, 200);
+        assert_eq!(bootstrap["profile"]["visual_style"], "laterano");
+        let (_, access) = http(host, "GET", "/api/access", Value::Null, false).await;
+        assert_eq!(access["profile"]["visual_style"], "laterano");
+        assert_eq!(http(host, "GET", "/api/profile", Value::Null, false).await.1["visual_style"], "laterano");
+        for path in ["/startup-laterano-emblem.js", "/startup-laterano-ornaments.js", "/startup-laterano.js", "/startup-laterano.css"] {
+            assert!(asset(path).is_some(), "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn real_access_gate_persists_verifies_rotates_locks_and_removes_password() {
+        let server = harness(None).await;
+        let host = &server.host;
+        save_startup_profile(&host.outer_home, &StartupProfile { username: "Operator fixture".into(), badge_id: "DSH-TEST".into(), ..StartupProfile::default() }).unwrap();
+        set_next_startup(&host.outer_home, true).unwrap();
+        let (status, access, _) = access_http(host, "GET", "/api/access", Value::Null, None).await;
+        assert_eq!(status, 200);
+        assert_eq!(access["enabled"], false);
+        assert_eq!(access["unlocked"], true);
+        assert_eq!(access["profile"]["badge_id"], "DSH-TEST");
+        assert_eq!(access_http(host, "POST", "/api/access/password", json!({"password":"short"}), None).await.0, 400);
+        let (status, access, cookie) = access_http(host, "POST", "/api/access/password", json!({"password":"Local-Pass-A1"}), None).await;
+        assert_eq!(status, 200);
+        assert_eq!(access["enabled"], true);
+        let header = cookie.unwrap();
+        assert!(header.contains("HttpOnly") && header.contains("SameSite=Strict"));
+        assert!(!header.contains("Domain="));
+        let first_cookie = header.split(';').next().unwrap().to_owned();
+        let saved = std::fs::read_to_string(host.outer_home.join("web-access.json")).unwrap();
+        assert!(!saved.contains("Local-Pass-A1"));
+        assert!(saved.contains("$argon2id$"));
+        assert!(!access.to_string().contains("argon2"));
+
+        for (method, path) in [
+            ("GET", "/api/harness/bootstrap?dsh-startup=off"), ("GET", "/api/profile"),
+            ("POST", "/api/profile"), ("POST", "/api/load"), ("POST", "/api/startup-next"),
+            ("POST", "/api/harness/rpc"), ("POST", "/api/access/password"),
+            ("GET", "/api/harness/service"), ("POST", "/api/harness/shutdown"),
+        ] {
+            let (status, error, _) = access_http(host, method, path, json!({}), None).await;
+            assert_eq!(status, 401, "{path}");
+            assert_eq!(error["error"]["code"], "access_locked");
+        }
+        let (_, locked, _) = access_http(host, "GET", "/api/access", Value::Null, None).await;
+        assert_eq!(locked["enabled"], true);
+        assert_eq!(locked["unlocked"], false);
+        assert!(locked.get("sessions").is_none() && locked.get("workspace").is_none());
+        assert_eq!(access_http(host, "POST", "/api/access/unlock", json!({"password":"incorrect"}), None).await.0, 401);
+        assert_eq!(access_http(host, "POST", "/api/access/unlock", json!({"password":"Local-Pass-A1"}), None).await.0, 429);
+        tokio::time::sleep(Duration::from_millis(1050)).await;
+        let (status, access, cookie) = access_http(host, "POST", "/api/access/unlock", json!({"password":"Local-Pass-A1"}), None).await;
+        assert_eq!(status, 200);
+        assert_eq!(access["unlocked"], true);
+        let cookie = cookie.unwrap().split(';').next().unwrap().to_owned();
+        assert_eq!(access_http(host, "GET", "/api/harness/bootstrap", Value::Null, Some(&cookie)).await.0, 200);
+        assert_eq!(access_http(host, "POST", "/api/profile", json!({"username":"Updated operator","badge_id":"DSH-NEW"}), Some(&cookie)).await.0, 200);
+        assert_eq!(load_startup_profile(&host.outer_home).unwrap().username, "Updated operator");
+        assert_eq!(access_http(host, "POST", "/api/access/password", json!({"current_password":"incorrect","password":"Local-Pass-B2"}), Some(&cookie)).await.0, 401);
+        tokio::time::sleep(Duration::from_millis(1050)).await;
+        let (status, _, rotated) = access_http(host, "POST", "/api/access/password", json!({"current_password":"Local-Pass-A1","password":"Local-Pass-B2"}), Some(&cookie)).await;
+        assert_eq!(status, 200);
+        let rotated = rotated.unwrap().split(';').next().unwrap().to_owned();
+        for revoked in [&first_cookie, &cookie] {
+            assert_eq!(access_http(host, "GET", "/api/harness/bootstrap", Value::Null, Some(revoked)).await.0, 401);
+        }
+        assert!(!crate::web_access::verify("Local-Pass-A1", &crate::web_access::load(&host.outer_home).unwrap().unwrap()));
+        assert_eq!(access_http(host, "POST", "/api/access/lock", json!({}), Some(&rotated)).await.1["unlocked"], false);
+        assert_eq!(access_http(host, "GET", "/api/profile", Value::Null, Some(&rotated)).await.0, 401);
+
+        // A restarted host reads the saved password and has no remembered browser sessions.
+        *host.access.lock().await = crate::web_access::Sessions::default();
+        assert_eq!(access_http(host, "GET", "/api/profile", Value::Null, Some(&rotated)).await.0, 401);
+        let (status, _, cookie) = access_http(host, "POST", "/api/access/unlock", json!({"password":"Local-Pass-B2"}), None).await;
+        assert_eq!(status, 200);
+        let cookie = cookie.unwrap().split(';').next().unwrap().to_owned();
+        let (status, access, _) = access_http(host, "POST", "/api/access/password", json!({"current_password":"Local-Pass-B2","password":""}), Some(&cookie)).await;
+        assert_eq!(status, 200);
+        assert_eq!(access["enabled"], false);
+        assert!(crate::web_access::load(&host.outer_home).unwrap().is_none());
+        assert_eq!(access_http(host, "GET", "/api/harness/bootstrap", Value::Null, None).await.0, 200);
+        // Access changes do not read or consume any terminal animation preference.
+        assert_eq!(peek_next_startup(&host.outer_home).unwrap(), Some(true));
+    }
+
+    #[tokio::test]
+    async fn locked_service_discovery_and_cli_shutdown_use_a_non_browser_secret() {
+        let server = harness(None).await;
+        let host = &server.host;
+        crate::web_access::save(&host.outer_home, None, Some(crate::web_access::hash("Local-Pass-A1").unwrap())).unwrap();
+        let client = crate::web_launch::client().unwrap();
+        let existing = crate::web_launch::probe(&client, &host.authority).await.unwrap();
+        assert_eq!(existing.workspace, host.workspace.to_string_lossy());
+        let (_, discovery) = http(host, "GET", "/api/harness/discovery", Value::Null, false).await;
+        assert!(discovery.get("token").is_none());
+        let secret = &host.service.as_ref().unwrap().control_token;
+        let (_, public) = http(host, "GET", "/api/access", Value::Null, false).await;
+        assert!(!public.to_string().contains(secret));
+        assert_eq!(http(host, "GET", "/api/harness/service", Value::Null, true).await.0, 401);
+        assert_eq!(http_with_token(host, "GET", "/api/harness/service", Value::Null, Some(secret)).await.0, 200);
+        // Even the management secret cannot read chat/session/profile APIs.
+        assert_eq!(http_with_token(host, "GET", "/api/harness/bootstrap", Value::Null, Some(secret)).await.0, 401);
+        let port = host.authority.rsplit(':').next().unwrap().parse().unwrap();
+        crate::web_launch::stop(&client, &host.authority, port, &existing).await.unwrap();
+        assert!(*host.service.as_ref().unwrap().shutdown.borrow());
+    }
+
+    #[tokio::test]
+    async fn standalone_preview_enforces_saved_access_and_corruption_fails_closed() {
+        let server = test_host(None, false).await;
+        let host = &server.host;
+        crate::web_access::save(&host.outer_home, None, Some(crate::web_access::hash("Preview-Pass-1").unwrap())).unwrap();
+        assert_eq!(http(host, "GET", "/api/profile", Value::Null, false).await.0, 401);
+        assert_eq!(http(host, "POST", "/api/load", json!({}), true).await.0, 401);
+        assert_eq!(http(host, "GET", "/startup-preview.html", Value::Null, false).await.0, 200);
+        std::fs::write(host.outer_home.join("web-access.json"), "corrupt").unwrap();
+        assert_eq!(http(host, "GET", "/api/profile", Value::Null, false).await.0, 503);
+        assert_eq!(http(host, "GET", "/api/access", Value::Null, false).await.0, 503);
+    }
+
+    #[tokio::test]
+    async fn password_change_in_another_host_revokes_old_sessions_and_cookies_are_port_scoped() {
+        let original = harness(None).await;
+        let host = &original.host;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let other = Arc::new(Host {
+            access: Mutex::new(crate::web_access::Sessions::default()), password_work: Semaphore::new(1),
+            workspace: host.workspace.clone(), outer_home: host.outer_home.clone(), roots: vec![],
+            authority: listener.local_addr().unwrap().to_string(), token: uuid::Uuid::new_v4().to_string(),
+            sound: false, inventory: Mutex::new(None), runtime: host.runtime.clone(), assets: host.assets.clone(),
+            startup_override: None, service: Some(HarnessService::new()),
+        });
+        let cloned = other.clone();
+        let task = tokio::spawn(async move { accept_connections(listener, cloned).await.unwrap(); });
+        let (status, _, cookie) = access_http(host, "POST", "/api/access/password", json!({"password":"Shared-Pass-A1"}), None).await;
+        assert_eq!(status, 200);
+        let cookie = cookie.unwrap().split(';').next().unwrap().to_owned();
+        assert_eq!(access_http(&other, "GET", "/api/profile", Value::Null, Some(&cookie)).await.0, 401);
+        let (status, access, other_cookie) = access_http(&other, "POST", "/api/access/unlock", json!({"password":"Shared-Pass-A1"}), None).await;
+        assert_eq!(status, 200);
+        assert_eq!(access["enabled"], true);
+        let other_cookie = other_cookie.unwrap().split(';').next().unwrap().to_owned();
+        assert_ne!(cookie.split('=').next(), other_cookie.split('=').next());
+        assert_eq!(access_http(&other, "POST", "/api/access/password", json!({"current_password":"Shared-Pass-A1","password":"Shared-Pass-B2"}), Some(&other_cookie)).await.0, 200);
+        assert_eq!(access_http(host, "GET", "/api/profile", Value::Null, Some(&cookie)).await.0, 401);
+        assert_eq!(access_http(host, "POST", "/api/access/unlock", json!({"password":"Shared-Pass-B2"}), None).await.0, 200);
+        task.abort();
+        let _ = task.await;
+    }
+
+    #[tokio::test]
+    async fn harness_service_shutdown_requires_auth_and_identity_then_releases_port() {
+        let mut server = harness(None).await;
+        let host = &server.host;
+        assert_eq!(http(host, "GET", "/api/harness/service", Value::Null, false).await.0, 403);
+        let (status, service) = http(host, "GET", "/api/harness/service", Value::Null, true).await;
+        assert_eq!(status, 200);
+        assert_eq!(service["service"], "dsh-harness");
+        assert_eq!(service["protocol_version"], 1);
+        assert_eq!(service["pid"], std::process::id());
+        assert_eq!(service["workspace"], json!(host.workspace));
+        assert_eq!(service["can_shutdown"], true);
+        assert!(!service.to_string().contains(&host.token));
+        let instance = service["instance_id"].as_str().unwrap();
+        assert!(!instance.is_empty());
+        assert_ne!(instance, HarnessService::new().instance_id);
+        let body = json!({"instance_id":instance});
+        assert_eq!(http(host, "POST", "/api/harness/shutdown", body.clone(), false).await.0, 403);
+        assert_eq!(http_with_token(host, "POST", "/api/harness/shutdown", body.clone(), Some("incorrect-token")).await.0, 403);
+        assert_eq!(http(host, "POST", "/api/harness/shutdown", json!({}), true).await.0, 400);
+        assert_eq!(http(host, "POST", "/api/harness/shutdown", json!({"instance_id":"stale-instance"}), true).await.0, 409);
+        assert_eq!(http(host, "GET", "/api/harness/bootstrap", Value::Null, false).await.0, 200);
+        let (status, acknowledged) = http(host, "POST", "/api/harness/shutdown", body, true).await;
+        assert_eq!(status, 200);
+        assert_eq!(acknowledged, json!({"accepted":true,"instance_id":instance}));
+        tokio::time::timeout(Duration::from_secs(2), &mut server.task).await.unwrap().unwrap();
+        let listener = TcpListener::bind(&host.authority).await.unwrap();
+        assert_eq!(listener.local_addr().unwrap().to_string(), host.authority);
+    }
+
+    #[tokio::test]
+    async fn harness_service_shutdown_is_sticky_before_accept_subscribes() {
+        let mut server = harness(None).await;
+        server.task.abort();
+        assert!((&mut server.task).await.unwrap_err().is_cancelled());
+        let listener = TcpListener::bind(&server.host.authority).await.unwrap();
+        server.host.service.as_ref().unwrap().shutdown.send_replace(true);
+        tokio::time::timeout(Duration::from_secs(2), accept_connections(listener, server.host.clone()))
+            .await.unwrap().unwrap();
+        TcpListener::bind(&server.host.authority).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn standalone_preview_does_not_expose_harness_service_or_shutdown() {
+        let server = test_host(None, false).await;
+        for (method, path) in [("GET", "/api/harness/service"), ("POST", "/api/harness/shutdown")] {
+            assert_eq!(http(&server.host, method, path, json!({"instance_id":"anything"}), true).await.0, 404);
+        }
+        assert_eq!(http(&server.host, "GET", "/startup-preview.html", Value::Null, false).await.0, 200);
+    }
+
+    #[tokio::test]
+    async fn harness_http_exposes_real_state_and_rejects_unauthenticated_writes() {
+        let server = harness(None).await;
+        let host = &server.host;
+        let (status, initial) =
+            http(host, "GET", "/api/harness/bootstrap", Value::Null, false).await;
+        assert_eq!(status, 200);
+        assert_eq!(initial["skills"][0]["name"], "http-fixture");
+        assert_eq!(initial["plugins"][0]["tool_count"], 1);
+        assert_eq!(initial["status"], "missing_credentials");
+        assert_eq!(initial["inventory_mode"], "mounted");
+        let unauthenticated = http(
+            host,
+            "POST",
+            "/api/harness/rpc",
+            json!({"method":"sessions/create"}),
+            false,
+        )
+        .await;
+        assert_eq!(unauthenticated.0, 403);
+        assert!(host
+            .runtime
+            .as_ref()
+            .unwrap()
+            .sessions
+            .list_ids()
+            .is_empty());
+        let created = rpc(host, "sessions/create", json!({"name":"HTTP session"})).await;
+        let id = created["result"]["session"]["id"].as_str().unwrap();
+        let listed = rpc(host, "sessions/list", json!({})).await;
+        assert_eq!(listed["result"]["sessions"][0]["id"], id);
+        let rejected = rpc(
+            host,
+            "agent/turn",
+            json!({"session_id":id,"prompt":"must not fabricate an answer","wait":false}),
+        )
+        .await;
+        assert_eq!(rejected["error"]["code"], -32002);
+        let fetched = rpc(host, "sessions/get", json!({"id":id})).await;
+        assert!(fetched["result"]["session"]["events"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert!(rpc(host, "sessions/get", json!({"id":"../secret"}))
+            .await
+            .get("error")
+            .is_some());
+        let (status, profile) = http(host, "GET", "/api/profile", Value::Null, false).await;
+        assert_eq!(status, 200);
+        assert_eq!(profile["inventory_mode"], "mounted");
+        let runtime = host.runtime.as_ref().unwrap();
+        let generation = runtime.skills.read().as_ref().unwrap().generation();
+        let (status, inventory) = http(host, "POST", "/api/load", json!({}), true).await;
+        assert_eq!(status, 200);
+        assert_eq!(inventory["skills"], initial["skills"]);
+        assert_eq!(
+            runtime.skills.read().as_ref().unwrap().generation(),
+            generation
+        );
+        assert!(host.inventory.lock().await.is_none());
+        let (status, preference) = http(
+            host,
+            "POST",
+            "/api/startup-next",
+            json!({"enabled":true}),
+            true,
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(preference["scope"], "next_cli");
+        let (_, again) = http(host, "GET", "/api/harness/bootstrap", Value::Null, false).await;
+        assert_eq!(again["startup"]["next_enabled"], true);
+        http(host, "POST", "/api/load", json!({}), true).await;
+        assert_eq!(
+            dsh_core::take_next_startup(&host.outer_home).unwrap(),
+            Some(true)
+        );
+        assert_eq!(dsh_core::take_next_startup(&host.outer_home).unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn harness_static_files_preserve_embedded_preview_and_block_traversal() {
+        let server = harness(None).await;
+        let (status, body) = http(&server.host, "GET", "/", Value::Null, false).await;
+        assert_eq!(status, 200);
+        assert!(body.as_str().unwrap().contains("Real Harness fixture"));
+        for path in ["/startup-preview.html", "/startup-embed.js"] {
+            assert_eq!(
+                http(&server.host, "GET", path, Value::Null, false).await.0,
+                200
+            );
+        }
+        for path in [
+            "/../secret.txt",
+            "/%2e%2e/secret.txt",
+            "/%252e%252e/secret.txt",
+            "/a%5c..%5csecret.txt",
+            "/C%3A/secret.txt",
+        ] {
+            assert_eq!(
+                http(&server.host, "GET", path, Value::Null, false).await.0,
+                403,
+                "{path}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn startup_override_is_distinct_from_configuration_and_next_cli() {
+        let server = harness(None).await;
+        set_next_startup(&server.host.outer_home, true).unwrap();
+        let runtime = server.host.runtime.as_ref().unwrap();
+        for override_enabled in [None, Some(false), Some(true)] {
+            let host = Host {
+                access: Mutex::new(crate::web_access::Sessions::default()),
+                password_work: Semaphore::new(1),
+                workspace: server.host.workspace.clone(),
+                outer_home: server.host.outer_home.clone(),
+                roots: vec![],
+                authority: server.host.authority.clone(),
+                token: server.host.token.clone(),
+                sound: false,
+                inventory: Mutex::new(None),
+                runtime: Some(runtime.clone()),
+                assets: None,
+                startup_override: override_enabled,
+                service: None,
+            };
+            let value = bootstrap(&host, runtime).unwrap();
+            assert_eq!(
+                value["startup"]["override_enabled"],
+                json!(override_enabled)
+            );
+            assert_eq!(value["startup"]["enabled"], false);
+            assert_eq!(value["startup"]["next_enabled"], true);
+        }
+        assert_eq!(
+            peek_next_startup(&server.host.outer_home).unwrap(),
+            Some(true)
+        );
+    }
+
+    #[tokio::test]
+    async fn harness_two_real_streamed_turns_are_correlated_and_persisted() {
+        let mock = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/v1", mock.local_addr().unwrap());
+        let mock_task = tokio::spawn(async move {
+            for suffix in ["one", "two"] {
+                let (mut socket, _) = mock.accept().await.unwrap();
+                let request = read_request(&mut socket).await.unwrap();
+                let body: Value = serde_json::from_slice(&request.body).unwrap();
+                assert!(body["messages"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|m| m["role"] == "user"));
+                if suffix == "two" {
+                    assert!(body.to_string().contains("reply one"));
+                }
+                // Keep the first real request pending while two tabs race to
+                // submit the same session. Only one may enter the agent loop.
+                tokio::time::sleep(Duration::from_millis(80)).await;
+                let frames = [
+                    format!(
+                        "data: {}\n\n",
+                        json!({"choices":[{"delta":{"content":"reply "},"finish_reason":null}]})
+                    ),
+                    format!(
+                        "data: {}\n\n",
+                        json!({"choices":[{"delta":{"content":suffix},"finish_reason":"stop"}]})
+                    ),
+                    "data: [DONE]\n\n".into(),
+                ];
+                let length: usize = frames.iter().map(String::len).sum();
+                socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+                for frame in frames {
+                    socket.write_all(frame.as_bytes()).await.unwrap();
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }
+        });
+        let server = harness(Some(endpoint)).await;
+        let (_, bootstrap) = http(
+            &server.host,
+            "GET",
+            "/api/harness/bootstrap",
+            Value::Null,
+            false,
+        )
+        .await;
+        assert!(!bootstrap.to_string().contains("only-local-fixture-secret"));
+        assert_eq!(bootstrap["model"]["ready"], true);
+        let created = rpc(
+            &server.host,
+            "sessions/create",
+            json!({"name":"Streamed HTTP"}),
+        )
+        .await;
+        let id = created["result"]["session"]["id"].as_str().unwrap();
+        let mut cursor = bootstrap["latest_sequence"].as_u64().unwrap();
+        let mut observed = Vec::new();
+        for suffix in ["one", "two"] {
+            let params =
+                json!({"session_id":id,"prompt":format!("HTTP turn {suffix}"),"wait":false});
+            if suffix == "one" {
+                let (first, second) = tokio::join!(
+                    rpc(&server.host, "agent/turn", params.clone()),
+                    rpc(&server.host, "agent/turn", params)
+                );
+                let responses = [first, second];
+                assert_eq!(
+                    responses
+                        .iter()
+                        .filter(|value| value["result"]["accepted"] == true)
+                        .count(),
+                    1,
+                    "{responses:?}"
+                );
+                assert_eq!(
+                    responses
+                        .iter()
+                        .filter(|value| value["error"]["code"] == -32003)
+                        .count(),
+                    1,
+                    "{responses:?}"
+                );
+            } else {
+                let accepted = rpc(&server.host, "agent/turn", params).await;
+                assert_eq!(accepted["result"]["accepted"], true, "{accepted}");
+            }
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+            let mut streamed = String::new();
+            loop {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "timed out waiting for real agent events"
+                );
+                let batch = rpc(
+                    &server.host,
+                    "events/wait",
+                    json!({"sequence":cursor,"limit":2,"timeout_ms":500}),
+                )
+                .await;
+                let events = batch["result"]["events"].as_array().unwrap();
+                let mut done = false;
+                for event in events {
+                    let sequence = event["sequence"].as_u64().unwrap();
+                    assert!(sequence > cursor);
+                    cursor = sequence;
+                    if event["payload"]["session_id"] == id {
+                        if event["event_type"] == "agent.text_delta" {
+                            streamed.push_str(event["payload"]["text"].as_str().unwrap());
+                        }
+                        if event["event_type"] == "agent.done" {
+                            done = true;
+                        }
+                        assert_ne!(event["event_type"], "agent.error", "{event}");
+                    }
+                    observed.push(event.clone());
+                }
+                if done {
+                    break;
+                }
+            }
+            assert_eq!(streamed, format!("reply {suffix}"));
+        }
+        mock_task.await.unwrap();
+        let fetched = rpc(&server.host, "sessions/get", json!({"id":id})).await;
+        let messages = fetched["result"]["session"]["events"].as_array().unwrap();
+        for (kind, count) in [("user_message", 2), ("assistant_message", 2)] {
+            assert_eq!(
+                messages
+                    .iter()
+                    .filter(|event| event["type"] == kind)
+                    .count(),
+                count
+            );
+        }
+        let disk = dsh_core::Session::load_json(
+            &server
+                .host
+                .outer_home
+                .join("sessions")
+                .join(format!("{id}.json")),
+        )
+        .unwrap();
+        assert_eq!(
+            disk.events
+                .iter()
+                .filter(|event| matches!(event, dsh_core::SessionEvent::AssistantMessage { .. }))
+                .count(),
+            2
+        );
+        assert_eq!(
+            observed
+                .iter()
+                .filter(|event| event["event_type"] == "agent.done")
+                .count(),
+            2
+        );
+    }
+    #[test]
+    fn local_requests_require_exact_host_origin_and_write_token() {
+        let host = Host {
+            access: Mutex::new(crate::web_access::Sessions::default()),
+            password_work: Semaphore::new(1),
+            workspace: PathBuf::new(),
+            outer_home: PathBuf::new(),
+            roots: vec![],
+            authority: "127.0.0.1:8769".into(),
+            token: "test-token".into(),
+            sound: false,
+            inventory: Mutex::new(None),
+            runtime: None,
+            assets: None,
+            startup_override: None,
+            service: None,
+        };
+        let mut r = Request {
+            method: "GET".into(),
+            path: "/api/profile".into(),
+            headers: HashMap::from([("host".into(), host.authority.clone())]),
+            body: vec![],
+        };
+        assert!(allowed(&r, &host));
+        r.headers
+            .insert("origin".into(), "https://example.com".into());
+        assert!(!allowed(&r, &host));
+        r.headers.remove("origin");
+        r.method = "POST".into();
+        assert!(!allowed(&r, &host));
+        r.headers.insert("x-dsh-token".into(), host.token.clone());
+        assert!(allowed(&r, &host));
+        r.headers
+            .insert("host".into(), "attacker.example:8769".into());
+        assert!(!allowed(&r, &host));
+    }
+    #[test]
+    fn assets_are_embedded_and_paths_allowlisted() {
+        assert!(asset("/startup-preview.html?v=1").is_some());
+        assert!(asset("/startup-local.js").is_some());
+        assert!(asset("/../config/default.toml").is_none());
+        assert!(asset("/api/profile").is_none());
+        assert!(audio_asset("/assets/voice/phase-5.wav")
+            .unwrap()
+            .starts_with(b"RIFF"));
+        assert!(audio_asset("/assets/voice/../../config/default.toml").is_none());
+    }
+}
