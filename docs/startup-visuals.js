@@ -33,10 +33,13 @@
     const px = reduced?0:(nx-.5)*26, py = reduced?0:(ny-.5)*20;
     const spin = (reduced?0:ambient*.46+time*1.35+drag*2.6)+channel*TAU/3;
     const pulse = reduced?1:1+Math.sin(ambient*1.65)*.025;
-    const light = phase > 0 && state.light !== false;
-    const C = phase===0 ? {bg:'#030506',ink:'#f2f4f2',soft:'#859397',line:'#28363d',accent:'#b5ced8',cool:'#82b3c5',ghostA:'#bd7174',ghostB:'#3a94b1'} : light ?
-      {bg:'#eeeae2',ink:'#162126',soft:'#68767b',line:'#b9c3c3',accent:'#c5793f',cool:'#41889f',ghostA:'#b9696e',ghostB:'#2c819a'} :
-      {bg:'#0b1116',ink:'#e6edf0',soft:'#8497a1',line:'#2b424e',accent:'#82bfd2',cool:'#5596b2',ghostA:'#bd829d',ghostB:'#61b4d3'};
+    const light = state.light !== false;
+    const pageBackground = light ? '#eeeae2' : '#0b1116';
+    // The opening follows the selected theme; only its dark variant keeps
+    // the original near-black stock and pale seal. Its wipe meets phase 1.
+    const C = phase===0 && !light ? {bg:'#030506',ink:'#f2f4f2',soft:'#859397',line:'#28363d',accent:'#b5ced8',cool:'#82b3c5',ghostA:'#bd7174',ghostB:'#3a94b1'} : light ?
+      {bg:pageBackground,ink:'#162126',soft:'#68767b',line:'#b9c3c3',accent:'#c5793f',cool:'#41889f',ghostA:'#b9696e',ghostB:'#2c819a'} :
+      {bg:pageBackground,ink:'#e6edf0',soft:'#8497a1',line:'#2b424e',accent:'#82bfd2',cool:'#5596b2',ghostA:'#bd829d',ghostB:'#61b4d3'};
     C.accent=(light?['#c5793f','#29848e','#8a668e']:['#82bfd2','#81c1a7','#b59ad9'])[channel];
     const identity = String(state.identity || 'OPERATOR').trim().slice(0,28) || 'OPERATOR';
     const inventory=state.inventory||{status:'idle',skills:[],plugins:[],issues:[]};
@@ -403,7 +406,7 @@
         impact(0,cy,part(p,.23,.51),p>.23&&p<.51?1:0);
         if(p>.32&&p<.46){const t=part(p,.32,.46);chromaticSeal(px,cy+py,s,Math.sin(t*Math.PI)*13);}
         if(p>.58&&p<.82){const t=part(p,.58,.82),x=mix(-W*.7,W*.7,t);ctx.save();ctx.transform(1,0,-.36,1,0,0);rect(x-14,-H/2,28,H,C.ink,.42*Math.sin(t*Math.PI));rect(x-72,-H/2,120,H,C.cool,.10*Math.sin(t*Math.PI));ctx.restore();}
-        if(p>.82){const t=ease(part(p,.82,1));rect(-W/2,-H/2,W,H,state.light!==false?'#eeeae2':'#0b1116',t);}
+        if(p>.82){const t=ease(part(p,.82,1));rect(-W/2,-H/2,W,H,pageBackground,t);}
       }
     }
     function permission() {

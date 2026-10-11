@@ -177,7 +177,7 @@ function createHarness(options = {}) {
     getElementById: id => htmlIds.has(id) ? element(id) : null,
     createElement: tag => { const node = element('generated-' + (++generatedNode)); node.tagName = tag.toUpperCase(); return node; },
     querySelectorAll: selector => (options.selectors?.[selector] || []).map(element),
-    body: { classList: classList() }, documentElement: { dataset: {} },
+    body: { classList: classList() }, documentElement: { dataset: { theme: html.match(/<html\b[^>]*\bdata-theme=["']([^"']+)["']/)?.[1] } },
   });
   const windowEvents = new EventTargetStub();
   const sandbox = {
@@ -875,12 +875,98 @@ async function main() {
   const themeReload=createHarness({fetch:themeFetch});await settle();
   assert.equal(themeReload.document.documentElement.dataset.visualStyle,'rhine');
   themeFails=true;themed.element('visualStyle').value='laterano';themed.element('visualStyle').emit('change');await settle();
-  assert.equal(themed.document.documentElement.dataset.visualStyle,'rhine','a failed style save restores the saved appearance');
+  assert.equal(themed.document.documentElement.dataset.visualStyle,'laterano','a failed style save must preserve the explicit current preview');
+  assert.equal(themeProfile.visual_style,'rhine','a failed save must not pretend that the server preference changed');
   assert.match(themed.element('styleStatus').textContent,/Theme disk failure/);
+  assert.equal(themed.element('retryStyle').hidden,false,'failed style persistence must expose an actionable retry');
   assert.equal(themed.messages.filter(item=>item.message.type==='profile-changed').length,1,'failed writes must not announce a changed profile');
+  themeFails=false;themed.element('retryStyle').emit('click');await settle();
+  assert.equal(themeProfile.visual_style,'laterano','retry must persist the retained choice');
+  assert.equal(themed.element('retryStyle').hidden,true,'a successful retry must clear the failed-save action');
+  assert.equal(themed.messages.filter(item=>item.message.type==='profile-changed').length,2);
   const lockedTheme=createHarness({accessFetch:async()=>jsonResponse({...accessStatus(),unlocked:false,profile:{...accessStatus().profile,visual_style:'laterano'}})});await settle();
   assert.equal(lockedTheme.document.documentElement.dataset.visualStyle,'laterano','the password gate must already use the saved style');
   assert.equal(lockedTheme.requests.filter(item=>item.url==='/api/profile').length,0);
+
+  for(const theme of ['light','dark']){
+    const themedIntro=createHarness({search:'?theme='+theme});await settle();
+    assert.equal(themedIntro.drawStates.at(-1).phase,0);
+    assert.equal(themedIntro.drawStates.at(-1).light,theme==='light','the opening renderer must receive its explicit launch theme');
+    assert.equal(themedIntro.document.documentElement.dataset.theme,theme);
+    themedIntro.element('theme').emit('click');
+    assert.equal(themedIntro.drawStates.at(-1).light,theme!=='light','switching theme must affect the same opening frame');
+    assert.equal(themedIntro.document.documentElement.dataset.theme,theme==='light'?'dark':'light');
+    themedIntro.windowEvents.emit('pagehide');
+  }
+
+  // A local selection made before authentication belongs to this playback.
+  // Public identity and protected profile rechecks must not briefly repaint
+  // the old saved film while the new choice is waiting to be persisted.
+  let pendingStyleProfile={...profileFixture,visual_style:'laterano'},styleVerified=false,styleAccessReads=0,releaseStyleProfile,releaseStyleSave;
+  const pendingAccessChecks=[];
+  const pendingAccessStatus=()=>({enabled:true,unlocked:styleVerified,token:profileFixture.token,sound:false,
+    profile:{username:pendingStyleProfile.username,badge_id:pendingStyleProfile.badge_id,visual_style:pendingStyleProfile.visual_style}});
+  const pendingStyle=createHarness({embedded:true,search:embedSearch,accessFetch:async url=>{
+    if(url==='/api/access/unlock'){styleVerified=true;return jsonResponse(pendingAccessStatus());}
+    if(++styleAccessReads===1)return jsonResponse(pendingAccessStatus());
+    return new Promise(resolve=>pendingAccessChecks.push(resolve));
+  },fetch:async(url,init={})=>{
+    if(url==='/api/profile'&&init.method==='POST')return new Promise(resolve=>{releaseStyleSave=()=>{
+      pendingStyleProfile={...pendingStyleProfile,...JSON.parse(init.body)};resolve(jsonResponse(pendingStyleProfile));
+    };});
+    if(url==='/api/profile')return new Promise(resolve=>{releaseStyleProfile=resolve;});
+    return jsonResponse({},404);
+  }});await settle();
+  assert.equal(pendingStyle.document.documentElement.dataset.visualStyle,'laterano');
+  const selectedStyleFrame=pendingStyle.drawStates.length;
+  pendingStyle.element('visualStyle').value='rhine';pendingStyle.element('visualStyle').emit('change');await settle();
+  const assertPendingRhine=()=>{
+    assert.equal(pendingStyle.document.documentElement.dataset.visualStyle,'rhine');
+    assert.equal(pendingStyle.element('visualStyle').value,'rhine');
+    assert.ok(pendingStyle.drawStates.slice(selectedStyleFrame).every(frame=>frame.visualStyle!=='laterano'),
+      'no intermediate access/profile notification may draw the old Laterano renderer over the chosen Rhine preview');
+  };
+  assertPendingRhine();
+  assert.equal(pendingStyle.requests.filter(item=>item.url==='/api/profile').length,0,'a pending preview choice must not bypass authentication');
+  pendingStyle.element('skip').emit('click');await settle();assert.equal(pendingStyle.drawStates.at(-1).phase,2);
+  pendingStyle.element('accessPassword').value='style-fixture-password';pendingStyle.element('accessForm').emit('submit');await settle();
+  for(let check=0;check<2;check++){
+    assert.equal(pendingAccessChecks.length,1,'unlock must perform each real access recheck');assertPendingRhine();
+    pendingAccessChecks.shift()(jsonResponse(pendingAccessStatus()));await settle();assertPendingRhine();
+  }
+  assert.equal(typeof releaseStyleProfile,'function','a verified session must hydrate the protected profile');
+  releaseStyleProfile(jsonResponse(pendingStyleProfile));await settle();assertPendingRhine();
+  const queuedStyleWrite=pendingStyle.requests.find(item=>item.url==='/api/profile'&&item.method==='POST');
+  assert.ok(queuedStyleWrite,'the explicit pre-auth choice must automatically persist after successful verification');
+  assert.deepEqual(JSON.parse(queuedStyleWrite.body),{visual_style:'rhine'});
+  assert.equal(pendingStyle.messages.filter(item=>item.message.type==='unlocked').length,0,'the parent must not hydrate the old style before the pending save completes');
+  releaseStyleSave();await settle();await settle();assertPendingRhine();
+  assert.equal(pendingStyleProfile.visual_style,'rhine');
+  const noticeTypes=pendingStyle.messages.map(item=>item.message.type);
+  assert.ok(noticeTypes.indexOf('profile-changed')>=0&&noticeTypes.indexOf('profile-changed')<noticeTypes.indexOf('unlocked'),
+    'the persisted preference must reach the parent before authentication finishes the startup');
+  pendingStyle.windowEvents.emit('pagehide');
+
+  const deniedStyle=createHarness({accessFetch:async url=>url.endsWith('/unlock')?jsonResponse({message:'Fixture password rejected'},401):
+    jsonResponse({...accessStatus(),unlocked:false,profile:{...profileFixture,visual_style:'laterano'}})});await settle();
+  const deniedChoiceFrame=deniedStyle.drawStates.length;
+  deniedStyle.element('visualStyle').value='rhine';deniedStyle.element('visualStyle').emit('change');await settle();
+  deniedStyle.element('skip').emit('click');await settle();
+  deniedStyle.element('accessPassword').value='rejected-style-fixture';deniedStyle.element('accessForm').emit('submit');await settle();
+  assert.equal(deniedStyle.element('accessEntry').hidden,false);
+  assert.equal(deniedStyle.document.documentElement.dataset.visualStyle,'rhine','failed authentication must retain the selected preview');
+  assert.ok(deniedStyle.drawStates.slice(deniedChoiceFrame).every(frame=>frame.visualStyle!=='laterano'));
+  assert.equal(deniedStyle.requests.filter(item=>item.url==='/api/profile'&&item.method==='POST').length,0,'a rejected password must never save pending appearance');
+  deniedStyle.windowEvents.emit('pagehide');
+
+  let finishLateStyleAccess;
+  const lateStyle=createHarness({search:'?style=laterano',accessFetch:async()=>new Promise(resolve=>{finishLateStyleAccess=resolve;})});await settle();
+  const lateChoiceFrame=lateStyle.drawStates.length;
+  lateStyle.element('visualStyle').value='rhine';lateStyle.element('visualStyle').emit('change');await settle();
+  finishLateStyleAccess(jsonResponse({...accessStatus(),unlocked:false,profile:{...profileFixture,visual_style:'laterano'}}));await settle();
+  assert.equal(lateStyle.document.documentElement.dataset.visualStyle,'rhine','an old first-connect result must not replace a newer explicit choice');
+  assert.ok(lateStyle.drawStates.slice(lateChoiceFrame).every(frame=>frame.visualStyle!=='laterano'));
+  lateStyle.windowEvents.emit('pagehide');
 
   const lateranoFetch = stream => async url => {
     if (url === '/api/profile') return jsonResponse({ ...profileFixture, visual_style: 'laterano', sound: false });

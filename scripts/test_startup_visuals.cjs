@@ -107,6 +107,23 @@ function render(width, height, state) {
 
 const inventory = { status: 'complete', skills: [{ name: 'real-review' }], plugins: [{ name: 'real-plugin' }], issues: [] };
 const base = { identity: 'CatShark / 星海', inventory, choice: 1, pointer: { x: 0.83, y: 0.17 }, drag: 0.7, impulse: 0.35 };
+// Theme is a rendering input in every chapter, including the waiting opening.
+// Observe the real full-canvas background paint, not just a controller flag.
+const luminance = color => {
+  assert.match(color, /^#[0-9a-f]{6}$/i, 'the flat background must be an actual opaque palette color');
+  const rgb = [1, 3, 5].map(at => parseInt(color.slice(at, at + 2), 16) / 255)
+    .map(value => value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4);
+  return rgb[0] * .2126 + rgb[1] * .7152 + rgb[2] * .0722;
+};
+for (let phase = 0; phase < phaseCount; phase++) for (const light of [true, false]) {
+  for (const mode of [{ progress: 0, waiting: true }, { progress: .5 }, { progress: 1, reducedMotion: true }]) {
+    const sample = render(1280, 720, { ...base, ...mode, phase, light });
+    const background = sample.records.find(record => record.op === 'fillRect' && record.args.join(',') === '0,0,1280,720');
+    assert.ok(background && background.globalAlpha === 1, 'every frame must paint its actual opaque viewport background');
+    assert.ok(light ? luminance(background.fillStyle) > .65 : luminance(background.fillStyle) < .08,
+      `Rhine phase ${phase} must honor its ${light ? 'light' : 'dark'} theme, including gates and reduced motion`);
+  }
+}
 const samples = [0, 0.001, 0.035, 0.16, 0.31, 0.42, 0.58, 0.82, 0.999, 1];
 let rendered = 0, maxCommands = 0;
 for (const [width, height] of [[1920, 1080], [390, 844]]) {

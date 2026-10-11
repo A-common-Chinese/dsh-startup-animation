@@ -25,8 +25,11 @@ const phases=[
  ['能力档案就绪','LOCAL LOAD COMPLETE','真实加载结果已返回。','ACCESS / VERIFIED'],
  ['欢迎进入 DSH','WELCOME TO DSH','新的探索，由此开始。','DSH / ONLINE']
 ];
-let light=true,muted=false,speed=1,width=1,height=1,dpr=1;
+let light=new URLSearchParams(location.search).get('theme')!=='dark',muted=false,speed=1,width=1,height=1,dpr=1;
 let visualStyle=new URLSearchParams(location.search).get('style')==='laterano'?'laterano':'rhine';
+// Authentication hydrates the saved profile more than once. Keep an explicit
+// selection separate until it has been persisted, so those reads cannot undo it.
+let pendingVisualStyle=null,styleRevision=0,styleSaving=null;
 let layoutDirty=true,sceneLayout={identity:null,inventory:null};
 const paintedStyles=new WeakMap();
 function motionStyle(node,key,value){
@@ -232,7 +235,7 @@ function renderLocal(){
  }
  if(profileSeen!==local.profile){
   profileSeen=local.profile;
-  if(local.connection==='local')applyVisualStyle(local.profile.visual_style);
+  if(local.connection==='local')applyVisualStyle(pendingVisualStyle??local.profile.visual_style);
   if(!profileDirty){ui.identityName.value=local.profile.username;ui.identityId.value=local.profile.badge_id;updateIdentity();}
  }
  ui.connectionStatus.textContent=local.connectionMessage;
@@ -240,6 +243,7 @@ function renderLocal(){
  ui.connectLocal.disabled=local.connection==='connecting';
  ui.saveIdentity.disabled=local.saving||local.locked;
  $('visualStyle').disabled=local.saving;
+ $('retryStyle').disabled=local.saving||local.locked||local.connection!=='local';
  ui.identityName.disabled=local.locked;ui.identityId.disabled=local.locked;
  ui.accessEntry.hidden=!local.locked;ui.accessState.hidden=local.locked;
  ui.accessPassword.disabled=local.unlocking;ui.accessSubmit.disabled=local.unlocking;
@@ -383,6 +387,7 @@ function finishEmbedded(reason){
  window.DSHEmbed.finish(reason);return true;
 }
 function syncSound(){voice()?.setMuted?.(muted);ui.sound.textContent=muted?'声音 · 关':'声音 · 开';ui.sound.setAttribute('aria-pressed',String(!muted));ui.sound.setAttribute('aria-label',muted?'声音已关闭，点击开启':'声音已开启，点击关闭');if(muted)stopAudio();}
+function syncTheme(){document.documentElement.dataset.theme=light?'light':'dark';ui.theme.textContent=light?'深色':'浅色';ui.theme.setAttribute('aria-label',light?'切换到深色档案':'切换到浅色档案');}
 function toggleSound(){if(audioUnavailable&&!voice())return;soundTouched=true;muted=!muted;syncSound();if(!muted){const current=generation;ensureAudio().then(ready=>{if(ready&&current===generation&&sequence.playing)scorePhase();});}}
 function settings(open){ui.controlPanel.hidden=!open;ui.settings.setAttribute('aria-expanded',String(open));ui.settings.setAttribute('aria-label',open?'关闭动画设置':'打开动画设置');if(open)enter(ui.controlPanel,[{clipPath:'inset(0 0 100%)'},{clipPath:'inset(0)'}],{duration:300});(open?ui.closeSettings:ui.settings).focus({preventScroll:true});}
 function point(event){const r=stage.getBoundingClientRect();pointer={x:Math.max(0,Math.min(1,(event.clientX-r.left)/r.width)),y:Math.max(0,Math.min(1,(event.clientY-r.top)/r.height))};}
@@ -394,7 +399,7 @@ stage.addEventListener('pointerleave',()=>{if(!pointerDown)pointer={x:.5,y:.5};}
 ui.play.addEventListener('click',()=>sequence.playing?pause():activate());
 ui.skip.addEventListener('click',skip);ui.replay.addEventListener('click',()=>restart());
 ui.sound.addEventListener('click',toggleSound);
-ui.theme.addEventListener('click',()=>{light=!light;document.documentElement.dataset.theme=light?'light':'dark';ui.theme.textContent=light?'深色':'浅色';ui.theme.setAttribute('aria-label',light?'切换到深色档案':'切换到浅色档案');refresh();});
+ui.theme.addEventListener('click',()=>{light=!light;syncTheme();clearTransition();refresh();});
 ui.settings.addEventListener('click',()=>settings(ui.controlPanel.hidden));ui.closeSettings.addEventListener('click',()=>settings(false));
 ui.interactive.addEventListener('click',()=>{sequence.interactive=!sequence.interactive;refresh();announce(sequence.interactive?'已启用三个确认节点。':'已切换为连续播放。');});
 ui.speed.addEventListener('change',()=>{speed=Number(ui.speed.value);lastFrame=performance.now();if(sequence.playing)scorePhase();});
@@ -425,16 +430,32 @@ function updateIdentity(){
 }
 function editIdentity(){profileDirty=true;draftRevision++;local.saveMessage='';updateIdentity();renderLocal();}
 ui.identityName.addEventListener('input',editIdentity);ui.identityId.addEventListener('input',editIdentity);
+async function savePendingStyle(){
+ if(pendingVisualStyle===null)return true;
+ if(local.connection!=='local'||local.locked){$('styleStatus').textContent='当前选择已保留 · 连接并验证后自动保存风格';return false;}
+ if(styleSaving)return styleSaving.promise;
+ const selected=pendingVisualStyle,revision=styleRevision,task={promise:null};
+ styleSaving=task;
+ task.promise=(async()=>{
+  const saved=await local.saveStyle(selected);
+  if(revision===styleRevision){
+   if(saved)pendingVisualStyle=null;
+   $('retryStyle').hidden=saved;
+   $('styleStatus').textContent=saved?'已保存 · 网页、桌面与终端下次启动使用此风格':local.saveMessage+' · 本次预览仍使用当前选择，可重试保存';
+  }
+  if(saved)window.DSHEmbed?.profileChanged();
+  refresh();if(sequence.playing)scorePhase();
+  return saved;
+ })();
+ try{return await task.promise;}finally{if(styleSaving===task)styleSaving=null;}
+}
 $('visualStyle').addEventListener('change',async()=>{
- const previous=local.profile.visual_style,selected=$('visualStyle').value;
- applyVisualStyle(selected);refresh();
- if(local.connection!=='local'||local.locked){$('styleStatus').textContent='仅预览 · 连接并验证后可保存风格';return;}
- const saved=await local.saveStyle(selected);
- if(saved)window.DSHEmbed?.profileChanged();
- applyVisualStyle(saved?local.profile.visual_style:previous);
- $('styleStatus').textContent=saved?'已保存 · 网页、桌面与终端下次启动使用此风格':local.saveMessage;
- refresh();if(sequence.playing)scorePhase();
+ pendingVisualStyle=$('visualStyle').value;styleRevision++;
+ $('retryStyle').hidden=true;
+ applyVisualStyle(pendingVisualStyle);refresh();
+ await savePendingStyle();
 });
+$('retryStyle').addEventListener('click',()=>{void savePendingStyle();});
 ui.accessForm.addEventListener('submit',async event=>{
  event.preventDefault();if(!local.locked||local.unlocking)return;
  const password=ui.accessPassword.value;
@@ -443,6 +464,8 @@ ui.accessForm.addEventListener('submit',async event=>{
  const current=generation,unlocked=await local.unlock(password);
  if(embeddedEnded||current!==generation)return;
  if(unlocked){
+   await savePendingStyle();
+   if(embeddedEnded||current!==generation)return;
   window.DSHEmbed?.unlocked();
   if(visualStyle==='laterano'&&sequence.phase===2){
    // The identity has already assembled while the operator types. Keep a short
@@ -456,7 +479,7 @@ ui.accessForm.addEventListener('submit',async event=>{
  else{ui.accessPassword.focus({preventScroll:true});announce(local.accessMessage);}
 });
 ui.saveIdentity.addEventListener('click',async()=>{const revision=draftRevision;const saved=await local.save(ui.identityName.value,ui.identityId.value);if(saved)window.DSHEmbed?.profileChanged();if(saved&&revision===draftRevision){profileDirty=false;ui.identityName.value=local.profile.username;ui.identityId.value=local.profile.badge_id;updateIdentity();}renderLocal();announce(local.saveMessage);});
-async function reconnectLocal(){const connected=await local.connect(true);if(connected&&sequence.phase===3&&!sequence.completed){local.cancelLoad();beginLocalLoad();}renderLocal();refresh();}
+async function reconnectLocal(){const connected=await local.connect(true);if(connected)await savePendingStyle();if(connected&&sequence.phase===3&&!sequence.completed){local.cancelLoad();beginLocalLoad();}renderLocal();refresh();}
 ui.connectLocal.addEventListener('click',reconnectLocal);ui.accessRetry.addEventListener('click',reconnectLocal);
 new ResizeObserver(resize).observe(pane);window.addEventListener('resize',resize);
 // A batch of changed text/page bounds produces one measurement and draw on the
@@ -467,7 +490,7 @@ for(const node of [$('skillsHeading'),$('pluginsHeading'),ui.skillsList,ui.plugi
 for(const list of [ui.skillsList,ui.pluginsList])list.addEventListener('scroll',invalidateGeometry,{passive:true});
 document.fonts?.ready.then(()=>{layoutDirty=true;refresh();});
  window.addEventListener('pagehide',()=>{generation++;starting=false;sequence.pause();manualPause=true;clearTransition();stopAudio();cancelVoice();local.dispose();cancelAnimationFrame(raf);raf=0;if(audio&&audio.state!=='closed')audio.close();});
-window.addEventListener('pageshow',event=>{if(event.persisted){ui.accessPassword.value='';local.resetVerification();lastFrame=performance.now();void local.connect(true);refresh();announce('预览已恢复。点按画面继续演出。');}});
+window.addEventListener('pageshow',event=>{if(event.persisted){ui.accessPassword.value='';local.resetVerification();lastFrame=performance.now();void local.connect(true).then(connected=>connected&&savePendingStyle());refresh();announce('预览已恢复。点按画面继续演出。');}});
 window.DSHEmbed?.onSkipRequest(skip);
-applyVisualStyle(visualStyle);renderLocal();motionChange();resize();void local.connect();window.DSHEmbed?.ready();
+syncTheme();applyVisualStyle(visualStyle);renderLocal();motionChange();resize();void local.connect().then(connected=>connected&&savePendingStyle());window.DSHEmbed?.ready();
 })();
