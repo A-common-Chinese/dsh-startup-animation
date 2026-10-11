@@ -62,6 +62,7 @@ function createHarness(options = {}) {
   const requests = [];
   const messages = [];
   const canvasCalls = [];
+  const layoutReads = [], domWrites = [];
   const resizeObservers = [];
   let generatedNode = 0;
   async function request(url, init = {}) {
@@ -80,15 +81,16 @@ function createHarness(options = {}) {
         id,
         hidden: id === 'controlPanel',
         value: id === 'identityName' ? 'OPERATOR' : id === 'identityId' ? 'DSH-0001' : '',
-        textContent: '', dataset: {}, style: { setProperty(name, value) { this[name] = value; }, getPropertyValue(name) { return this[name] ?? ''; } }, classList: classList(), attributes: new Map(),
+        textContent: '', dataset: {}, style: { setProperty(name, value) { domWrites.push({ id, property: name, value }); this[name] = value; }, getPropertyValue(name) { return this[name] ?? ''; } }, classList: classList(), attributes: new Map(),
         captures: new Set(),
         children: [],
         appendChild(child) { child.parentElement = child.parentNode = this; this.children.push(child); return child; },
         replaceChildren(...children) { this._text = ''; this.children = []; children.forEach(child => this.appendChild(child)); },
-        setAttribute(name, value) { this.attributes.set(name, value); },
+        setAttribute(name, value) { domWrites.push({ id, property: name, value }); this.attributes.set(name, value); },
         removeAttribute(name) { this.attributes.delete(name); },
         getAttribute(name) { return this.attributes.get(name); },
         getBoundingClientRect() {
+          layoutReads.push(id);
           const r = options.rectangleFor?.(this) || options.rectangles?.[id] || { left: 0, top: 0, width: 1000, height: 800 };
           return { ...r, right: r.left + r.width, bottom: r.top + r.height };
         },
@@ -117,7 +119,7 @@ function createHarness(options = {}) {
       });
       Object.defineProperty(node, 'textContent', {
         get() { return (this._text || '') + this.children.map(child => child.textContent).join(''); },
-        set(value) { this._text = String(value); this.children = []; },
+        set(value) { domWrites.push({ id, property: 'textContent', value }); this._text = String(value); this.children = []; },
       });
       for (const [property, field] of [['offsetLeft', 'left'], ['offsetTop', 'top'], ['offsetWidth', 'width'], ['offsetHeight', 'height']]) {
         Object.defineProperty(node, property, { get() {
@@ -203,7 +205,7 @@ function createHarness(options = {}) {
   }
 
   return {
-    element, document, windowEvents, frames, contexts, sources, animations, drawStates, requests, messages, canvasCalls,
+    element, document, windowEvents, frames, contexts, sources, animations, drawStates, requests, messages, canvasCalls, layoutReads, domWrites,
     parentWindow: sandbox.parent,
     resizeNode(id) { for (const observer of resizeObservers) if (observer.nodes.has(element(id))) observer.callback(); },
     releaseAudio() { pendingAudio.splice(0).forEach(resolve => resolve()); },
@@ -212,7 +214,7 @@ function createHarness(options = {}) {
       const pointer = { button: 0, pointerId: 1, clientX: 913, clientY: 721 };
       stage.emit('pointerdown', pointer); stage.emit('pointerup', pointer);
     },
-    frame(at) {
+    frame(at = now) {
       now = at;
       const pending = [...frames.values()]; frames.clear();
       for (const callback of pending) callback(now);
@@ -977,6 +979,7 @@ async function main() {
   portalRectangles.pluginsPage.left += 26;
   portalRectangles.pluginsPage.width -= 26;
   portalBook.windowEvents.emit('resize');
+  portalBook.frame();
   assert.equal(portalBook.drawStates.at(-1).layout.book.gutterX, 644, 'a resize must remeasure the real destination binding');
   assert.equal(portalBook.drawStates.at(-1).bookAge, ageBeforeResize, 'resizing must not restart the unfolding clock');
   assert.deepEqual(JSON.parse(JSON.stringify(portalBook.drawStates.at(-1).bookSource)), sourceBeforeResize,
@@ -1126,9 +1129,28 @@ async function main() {
   assert.equal(arrivedPose.layout.book.left.occupiedBottom, 409, 'true inventory arrival must replace message bounds with the real rendered row bounds');
   assert.equal(arrivedPose.layout.book.left.footerY, 495, 'the reserved footer must follow issue-driven flex reflow');
   const decorationAge = arrivedPose.bookAge;
+  const paneReads = () => book.layoutReads.filter(id => id === 'canvasPane').length;
+  const repeatedControlWrites = () => book.domWrites.filter(write =>
+    write.id === 'inventoryPanel' && write.property === '--book-open' ||
+    write.id === 'currentTime' && write.property === 'textContent' ||
+    write.id === 'seek' && write.property === 'aria-valuetext').length;
+  const readsBeforeBatch = paneReads(), drawsBeforeBatch = book.drawStates.length;
+  book.resizeNode('skillsList'); book.resizeNode('skillsHeading'); book.resizeNode('inventoryBook');
+  book.element('pluginsList').emit('scroll');
+  assert.equal(paneReads(), readsBeforeBatch, 'multiple observer/scroll notifications must not synchronously remeasure the scene');
+  assert.equal(book.drawStates.length, drawsBeforeBatch, 'observers must not recursively draw within a layout notification');
+  book.frame();
+  assert.equal(paneReads(), readsBeforeBatch + 1, 'one animation frame must batch all pending geometry notifications into one measurement');
+  assert.equal(book.drawStates.length, drawsBeforeBatch + 1, 'the batched geometry must be painted exactly once');
+  const writesAfterBatch = repeatedControlWrites();
+  book.frame();
+  assert.equal(paneReads(), readsBeforeBatch + 1, 'an unchanged subsequent frame must reuse the measured page layout');
+  assert.equal(repeatedControlWrites(), writesAfterBatch, 'unchanged opening and playback controls must not repeatedly write DOM properties');
+  assert.equal(book.drawStates.at(-1).bookAge, decorationAge, 'batching observer work must not advance the choreography clock');
   const priorFolioTop = parseFloat(book.element('inventoryPanel').style.getPropertyValue('--folio-top'));
   bookRectangles.stageHeading.height += 34;
   book.resizeNode('stageHeading');
+  book.frame();
   const tallerHeading = book.drawStates.at(-1).layout.heading;
   const adjustedFolioTop = parseFloat(book.element('inventoryPanel').style.getPropertyValue('--folio-top'));
   assert.ok(adjustedFolioTop > priorFolioTop && adjustedFolioTop > tallerHeading.y + tallerHeading.height,
@@ -1136,6 +1158,7 @@ async function main() {
   assert.equal(book.drawStates.at(-1).bookAge, decorationAge, 'a title reflow must not restart an already opening book');
   bookRectangles.stageHeading.height -= 34;
   book.resizeNode('stageHeading');
+  book.frame();
   assert.equal(parseFloat(book.element('inventoryPanel').style.getPropertyValue('--folio-top')), priorFolioTop,
     'removing a title wrap must restore the folio anchor instead of accumulating an offset');
   // A long name/source can wrap after font loading or responsive reflow without
@@ -1144,6 +1167,7 @@ async function main() {
   bookRectangles.skillsHeading.height = 47;
   bookRectangles.skillsList.top = 414;
   book.resizeNode('skillsList');
+  book.frame();
   const wrappedPage = book.drawStates.at(-1).layout.book.left;
   assert.equal(wrappedPage.heading.height, 47, 'wrapped heading bounds must be remeasured');
   assert.equal(wrappedPage.occupiedBottom, 479, 'ornaments must follow the full wrapped row height');
@@ -1151,6 +1175,7 @@ async function main() {
   rowMetrics.skillsList.extent = 500;
   rowMetrics.skillsList.scrollTop = 360;
   book.element('skillsList').emit('scroll');
+  book.frame();
   const scrolledPage = book.drawStates.at(-1).layout.book.left;
   assert.equal(scrolledPage.occupiedBottom, scrolledPage.list.y + scrolledPage.list.height,
     'overflow reserves the whole viewport even near the end of a scrolled list; seals must not appear between real entries');
@@ -1161,6 +1186,7 @@ async function main() {
   bookRectangles.skillsHeading.height = 31;
   bookRectangles.skillsList.top = 398;
   book.resizeNode('skillsHeading');
+  book.frame();
   assert.equal(book.drawStates.at(-1).layout.book.left.occupiedBottom, 409, 'the independent heading observer must restore the safe area after a reflow');
   book.frame(2501);
   const originalSkillRow = book.element('skillsList').children[0];

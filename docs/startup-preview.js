@@ -28,6 +28,13 @@ const phases=[
 let light=true,muted=false,speed=1,width=1,height=1,dpr=1;
 let visualStyle=new URLSearchParams(location.search).get('style')==='laterano'?'laterano':'rhine';
 let layoutDirty=true,sceneLayout={identity:null,inventory:null};
+const paintedStyles=new WeakMap();
+function motionStyle(node,key,value){
+ let styles=paintedStyles.get(node);if(!styles){styles=new Map();paintedStyles.set(node,styles);}
+ if(styles.get(key)===value)return;
+ styles.set(key,value);
+ if(key.startsWith('--'))node.style.setProperty(key,value);else node.style[key]=value;
+}
 let soundTouched=false,soundInitialized=false;
 let audio=null,master=null,audioSources=[],audioUnavailable=false;
 let phaseAge=0,visiblePhase=-1,starting=false;
@@ -159,7 +166,7 @@ function measureSceneLayout(){
   sceneLayout.book={...rect($('inventoryBook')),gutterX:(left.x+left.width+right.x)/2,spread:true,left,right};
  }
 }
-function clearTransition(){transitionAge=1;transitionCanvas.style.opacity='0';}
+function clearTransition(){transitionAge=1;motionStyle(transitionCanvas,'opacity','0');}
 function resetSceneMotion(){clearTransition();scenePhase=-1;paintedPhase=-1;sceneAge=0;bookAge=0;bookSource=null;}
 function beginScene(){
  if(scenePhase===sequence.phase)return;
@@ -173,7 +180,7 @@ function beginScene(){
  if(visualStyle==='laterano'&&paintedPhase===scenePhase&&scenePhase>=0&&!continuingBook&&!bindingBook&&!manualPause&&!reducedMotion.matches&&transitionCtx){
   transitionCanvas.width=canvas.width;transitionCanvas.height=canvas.height;
   transitionCtx.setTransform(1,0,0,1,0,0);transitionCtx.clearRect(0,0,canvas.width,canvas.height);transitionCtx.drawImage(canvas,0,0);
-  transitionAge=0;transitionCanvas.style.opacity='1';
+  transitionAge=0;motionStyle(transitionCanvas,'opacity','1');
  }else clearTransition();
  sceneAge=manualPause?(visualStyle==='laterano'?sequence.progress*1.65:sequence.elapsed):0;
  if(!continuingBook)bookAge=manualPause?(sequence.phase===4?durations[3]:0)+sequence.elapsed:0;
@@ -188,8 +195,8 @@ function drawScene(){
  const laterano=visualStyle==='laterano',inBook=sequence.phase===3||sequence.phase===4;
  const visualProgress=reducedMotion.matches?1:Math.max(sequence.progress,Math.min(1,sceneAge/1.65));
  const bookOpen=reducedMotion.matches?1:smoothStep((bookAge-1.35)/.67);
- ui.inventoryPanel.style.setProperty('--book-open',String(laterano?bookOpen:1));
- transitionCanvas.style.opacity=String(laterano&&!reducedMotion.matches?1-smoothStep(transitionAge/.6):0);
+ motionStyle(ui.inventoryPanel,'--book-open',String(laterano?bookOpen:1));
+ motionStyle(transitionCanvas,'opacity',String(laterano&&!reducedMotion.matches?1-smoothStep(transitionAge/.6):0));
  ctx.setTransform(dpr,0,0,dpr,0,0);
  const renderer=laterano&&window.DSHLateranoVisuals?window.DSHLateranoVisuals:DSHVisuals;
  renderer.draw(ctx,width,height,{phase:sequence.phase,progress:sequence.progress,visualProgress:laterano?visualProgress:undefined,bookAge:laterano?bookAge:undefined,bookSource:laterano?bookSource:undefined,bookOpen:laterano?bookOpen:undefined,time:sequence.time,textAge:laterano?(inBook?bookAge:sceneAge):manualPause?sequence.elapsed:Math.max(sequence.elapsed,phaseAge),choice:sequence.choices[Math.min(4,sequence.phase)]||0,light,reducedMotion:reducedMotion.matches,pointer,ambientTime,impulse,drag,waiting:sequence.waiting,identity:ui.identityName.value.trim()||local.profile.username,inventory:local.inventory,layout:sceneLayout});
@@ -319,11 +326,15 @@ function renderUI(){
   if(titleChanged||phaseChanged){layoutDirty=true;revealTitle(phaseChanged&&sequence.phase===2);}visiblePhase=sequence.phase;
  }
  setText(ui.phaseEnglish,p[1],{kind:'type',delay:.05});
- renderIdentity();
+ if(sequence.phase===2)renderIdentity();
  setText(ui.subtitleZh,sequence.phase===3||sequence.phase===4?local.inventory.message:sequence.phase===5?(local.inventory.status==='complete'?'本地能力已载入 · 欢迎 '+ui.identityName.value.trim():'演出完成 · 尚未读取完整本地数据'):p[2],{kind:'mask',delay:.12});
  setText(ui.subtitleEn,sequence.phase===3&&local.inventory.status==='loading'?'WAITING FOR THE LOCAL HOST · NO SIMULATED PROGRESS':sequence.phase===5?'READY TO DIVE':p[1],{kind:'type',delay:.22});
  textMotion.render();
- ui.currentTime.textContent=sequence.time.toFixed(2).padStart(5,'0');ui.seek.value=String(sequence.time);ui.seek.setAttribute('aria-valuetext',sequence.time.toFixed(2)+' 秒，'+p[0]+(sequence.held?'，等待真实读取或旁白完成':''));
+ const currentTime=sequence.time.toFixed(2).padStart(5,'0'),seekValue=String(sequence.time);
+ const accessibleTime=sequence.time.toFixed(2)+' 秒，'+p[0]+(sequence.held?'，等待真实读取或旁白完成':'');
+ if(ui.currentTime.textContent!==currentTime)ui.currentTime.textContent=currentTime;
+ if(ui.seek.value!==seekValue)ui.seek.value=seekValue;
+ if(ui.seek.getAttribute('aria-valuetext')!==accessibleTime)ui.seek.setAttribute('aria-valuetext',accessibleTime);
 }
 function frame(now){
  if(embeddedEnded)return;
@@ -340,7 +351,12 @@ function frame(now){
 }
 function wake(){if(!embeddedEnded&&!raf&&!document.hidden){lastFrame=performance.now();raf=requestAnimationFrame(frame);}}
 function refresh(){renderUI();drawScene();wake();}
-function resize(){const r=pane.getBoundingClientRect();width=r.width;height=r.height;dpr=Math.min(devicePixelRatio||1,2.5);canvas.width=Math.round(width*dpr);canvas.height=Math.round(height*dpr);clearTransition();layoutDirty=true;refresh();}
+function resize(){
+ const r=pane.getBoundingClientRect(),ratio=Math.min(devicePixelRatio||1,2.5);
+ if(width===r.width&&height===r.height&&dpr===ratio){layoutDirty=true;wake();return;}
+ width=r.width;height=r.height;dpr=ratio;
+ canvas.width=Math.round(width*dpr);canvas.height=Math.round(height*dpr);clearTransition();layoutDirty=true;refresh();
+}
 async function start(){
  if(starting||embeddedEnded)return;
  if(sequence.completed){restart(true);return;}
@@ -442,9 +458,12 @@ ui.saveIdentity.addEventListener('click',async()=>{const revision=draftRevision;
 async function reconnectLocal(){const connected=await local.connect(true);if(connected&&sequence.phase===3&&!sequence.completed){local.cancelLoad();beginLocalLoad();}renderLocal();refresh();}
 ui.connectLocal.addEventListener('click',reconnectLocal);ui.accessRetry.addEventListener('click',reconnectLocal);
 new ResizeObserver(resize).observe(pane);window.addEventListener('resize',resize);
-const geometryObserver=new ResizeObserver(()=>{layoutDirty=true;refresh();});geometryObserver.observe($('stageCopy'));geometryObserver.observe($('stageHeading'));geometryObserver.observe(ui.identityCard);geometryObserver.observe(ui.inventoryPanel);geometryObserver.observe($('inventoryBook'));inventoryColumns.forEach(node=>geometryObserver.observe(node));
+// A batch of changed text/page bounds produces one measurement and draw on the
+// next frame, rather than recursively repainting inside ResizeObserver delivery.
+const invalidateGeometry=()=>{layoutDirty=true;wake();};
+const geometryObserver=new ResizeObserver(invalidateGeometry);geometryObserver.observe($('stageCopy'));geometryObserver.observe($('stageHeading'));geometryObserver.observe(ui.identityCard);geometryObserver.observe(ui.inventoryPanel);geometryObserver.observe($('inventoryBook'));inventoryColumns.forEach(node=>geometryObserver.observe(node));
 for(const node of [$('skillsHeading'),$('pluginsHeading'),ui.skillsList,ui.pluginsList])geometryObserver.observe(node);
-for(const list of [ui.skillsList,ui.pluginsList])list.addEventListener('scroll',()=>{layoutDirty=true;refresh();},{passive:true});
+for(const list of [ui.skillsList,ui.pluginsList])list.addEventListener('scroll',invalidateGeometry,{passive:true});
 document.fonts?.ready.then(()=>{layoutDirty=true;refresh();});
  window.addEventListener('pagehide',()=>{generation++;starting=false;sequence.pause();manualPause=true;clearTransition();stopAudio();cancelVoice();local.dispose();cancelAnimationFrame(raf);raf=0;if(audio&&audio.state!=='closed')audio.close();});
 window.addEventListener('pageshow',event=>{if(event.persisted){ui.accessPassword.value='';local.resetVerification();lastFrame=performance.now();void local.connect(true);refresh();announce('预览已恢复。点按画面继续演出。');}});

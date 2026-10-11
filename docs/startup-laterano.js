@@ -34,11 +34,11 @@
     const ROOT3 = Math.sqrt(3), wide = W / H > 1.24;
     const light = state.light !== false;
     const color = light ? {
-      paper: '#f6f7f6', ink: '#101820', blue: '#195acc', cyan: '#159dcc',
-      line: '#a5bfd4', faint: '#dce6ed', soft: '#60768d', white: '#ffffff',
+      paper: '#e9eef4', ink: '#101820', blue: '#195acc', cyan: '#159dcc',
+      line: '#a5bfd4', faint: '#dce6ed', soft: '#60768d', white: '#ffffff', pureWhite: '#ffffff',
     } : {
       paper: '#0c1424', ink: '#edf3f9', blue: '#679cff', cyan: '#4dbbda',
-      line: '#35516e', faint: '#1c3047', soft: '#96afc7', white: '#101c2d',
+      line: '#35516e', faint: '#1c3047', soft: '#96afc7', white: '#101c2d', pureWhite: '#ffffff',
     };
     const accent = [color.blue, color.cyan, light ? '#3645bc' : '#a4a9ff'][choice];
     const identity = String(state.identity || 'OPERATOR').trim().slice(0, 28) || 'OPERATOR';
@@ -49,6 +49,8 @@
     const lettering = window.DSHText || globalThis.DSHText;
     const textAge = reduced ? 10 : finite(state.textAge, resting ? 2 : progress * 2.4);
     let textOrder = 0;
+    let sourceArchitectureCache;
+    const pageWritingCache = new Map();
 
     function measured(value, viewWidth = width, viewHeight = height, viewUnit = unit) {
       if (!value || ![value.x, value.y, value.width, value.height].every(Number.isFinite) || value.width <= 0 || value.height <= 0) return null;
@@ -115,14 +117,30 @@
       polygon([[x, y - radius], [x + radius, y], [x, y + radius], [x - radius, y]], filled ? ink : null, alpha, filled ? null : ink, 1);
     }
     function trace(points, amount, ink = accent, alpha = 1, weight = 1) {
-      const distances = points.slice(1).map((point, index) => Math.hypot(point[0] - points[index][0], point[1] - points[index][1]));
-      const end = distances.reduce((sum, distance) => sum + distance, 0) * clamp(amount);
-      let offset = 0;
-      distances.forEach((distance, index) => {
-        const fraction = distance > 0 ? clamp((end - offset) / distance) : 0;
-        if (fraction > 0) line(points[index][0], points[index][1], lerp(points[index][0], points[index + 1][0], fraction), lerp(points[index][1], points[index + 1][1], fraction), ink, alpha, weight);
-        offset += distance;
-      });
+      if (alpha <= 0 || amount <= 0 || points.length < 2) return;
+      // Settled engravings need neither cumulative distances nor one stroke
+      // per segment. One connected path also avoids dark alpha seams at joins.
+      if (amount >= 1) { inkPath(points, ink, alpha, weight); return; }
+      if (points.length === 2) {
+        line(...points[0], lerp(points[0][0], points[1][0], amount), lerp(points[0][1], points[1][1], amount), ink, alpha, weight);
+        return;
+      }
+      const distances = []; let total = 0;
+      for (let index = 1; index < points.length; index++) {
+        const distance = Math.hypot(points[index][0] - points[index - 1][0], points[index][1] - points[index - 1][1]);
+        distances.push(distance); total += distance;
+      }
+      let remaining = total * amount;
+      ctx.globalAlpha = clamp(alpha); ctx.strokeStyle = ink; ctx.lineWidth = weight;
+      ctx.beginPath(); ctx.moveTo(...points[0]);
+      for (let index = 0; index < distances.length && remaining > 0; index++) {
+        const distance = distances[index];
+        if (distance <= 0) continue;
+        const q = Math.min(1, remaining / distance);
+        ctx.lineTo(lerp(points[index][0], points[index + 1][0], q), lerp(points[index][1], points[index + 1][1], q));
+        remaining -= distance;
+      }
+      ctx.stroke(); ctx.globalAlpha = 1;
     }
     function label(value, x, y, size = 10, ink = color.soft, alpha = 1, spacing = 2, align = 'center', weight = 500, serif = false) {
       if (alpha <= 0) return;
@@ -238,15 +256,15 @@
       ctx.beginPath(); points.forEach(([xx, yy], index) => index ? ctx.lineTo(xx, yy) : ctx.moveTo(xx, yy));
       ctx.stroke(); ctx.globalAlpha = 1;
     }
-    function churchArchPaths(pose, amount) {
+    function churchArchPaths(pose, amount, segments = 32) {
       // A vertical shoulder tangent and two meeting crown tangents form a
       // pointed church window. Crown height is independent of the clear span:
       // the upright shafts survive even in a short, wide viewport.
       const q = smooth(amount), curve = Math.min(1, q * 1.5), legs = smooth(section(q, .43, 1));
       return [-1, 1].map(side => {
         const shoulder = pose.x + side * pose.half, apex = pose.spring - pose.rise;
-        const crown = Array.from({ length: 33 }, (_, index) => {
-          const t = index / 32 * curve;
+        const crown = Array.from({ length: segments + 1 }, (_, index) => {
+          const t = index / segments * curve;
           return [cubic(shoulder, shoulder, pose.x + side * pose.half * .31, pose.x, t),
             cubic(pose.spring, pose.spring - pose.rise * .53, apex + pose.rise * .22, apex, t)];
         });
@@ -271,7 +289,16 @@
           const windowSpring = spring + windowHalf * (bay ? 2.10 : 1.55);
           const pose = { x: xx, spring: windowSpring, half: windowHalf,
             rise: windowHalf * (bay ? 1.85 : 1.55), base: base - 12 * designUnit };
-          for (const arch of churchArchPaths(pose, section(amount, .31 + bay * .045, .79 + bay * .045))) {
+          // These narrow crowns are only a few dozen screen pixels high.
+          // Their shared 13-point source is smooth at that size and avoids
+          // rebuilding the main portal's 33-point contour for every pane.
+          const arches = churchArchPaths(pose, section(amount, .31 + bay * .045, .79 + bay * .045), 12);
+          const points = [arches[0].leg[0], ...arches[0].crown, ...arches[1].crown.slice().reverse(), arches[1].leg[0]];
+          paths.push({ side, kind: 'pane', bay, points, reference: {
+            left: xx - windowHalf, width: windowHalf * 2,
+            top: windowSpring - pose.rise, height: Math.max(designUnit, pose.base - windowSpring + pose.rise),
+          } });
+          for (const arch of arches) {
             paths.push({ side, kind: 'shaft', points: arch.leg });
             paths.push({ side, kind: 'crown', points: arch.crown });
           }
@@ -355,6 +382,7 @@
         seedTravel: Math.min(space.width * .15, 150 * detail), seedRise: Math.min(cardHeight * .30, 80 * detail) };
     }
     function sourceArchitecture() {
+      if (sourceArchitectureCache) return sourceArchitectureCache;
       const viewport = state.bookSource?.viewport, layout = state.bookSource?.layout;
       if (viewport?.width > 0 && viewport?.height > 0 && layout?.identity) {
         const oldUnit = Math.min(viewport.width, viewport.height) / 1000;
@@ -364,11 +392,13 @@
           const original = identityArchitecture(box, head,
             { width: viewport.width / oldUnit, height: viewport.height / oldUnit, unit: oldUnit });
           const scale = Math.min(width / viewport.width, height / viewport.height) * oldUnit / unit;
-          return Object.fromEntries(Object.entries(original).map(([key, value]) => [key, value * scale]));
+          sourceArchitectureCache = Object.fromEntries(Object.entries(original).map(([key, value]) => [key, value * scale]));
+          return sourceArchitectureCache;
         }
       }
       const box = sourceIdentity || { left: -W * .24, right: W * .24, top: atY(.43), bottom: atY(.72) };
-      return identityArchitecture(box, sourceHeading || { top: atY(.17), bottom: Math.min(box.top, atY(.44)) });
+      sourceArchitectureCache = identityArchitecture(box, sourceHeading || { top: atY(.17), bottom: Math.min(box.top, atY(.44)) });
+      return sourceArchitectureCache;
     }
     function archPose(architecture, inset, amount) {
       const lock = smooth(section(amount, .03 + inset * .055, .58 + inset * .06));
@@ -777,7 +807,10 @@
             inkPath(path.leg, ink, alpha, weight); inkPath(path.crown, ink, alpha, weight);
           }
         }
-        for (const path of portalTracery(architecture, progress)) inkPath(path.points, accent, .58, 1.05);
+        for (const path of portalTracery(architecture, progress)) {
+          if (path.kind === 'pane') polygon(path.points, color.pureWhite, 1, color.line, .85);
+          else inkPath(path.points, accent, .58, 1.05);
+        }
         const locked = smooth(section(progress, .57, .81));
         for (const side of [-1, 1]) {
           const column = x + side * columnOffset;
@@ -840,6 +873,20 @@
       const top = Math.min(...leaves.map(leaf => leaf.top)), bottom = Math.max(...leaves.map(leaf => leaf.bottom));
       return { center, top, bottom, leaves };
     }
+    function drawOrnaments(layer, folio = null) {
+      const ornaments = window.DSHLateranoOrnaments;
+      if (!ornaments?.draw) return;
+      const measuredFolio = folio && { ...folio, leaves: folio.leaves.map((leaf, index) =>
+        ({ ...leaf, writing: pageWriting(leaf, index) })) };
+      ctx.save();
+      try {
+        ornaments.draw(ctx, { layer, width: W, height: H, unit, phase, progress, ambient, reduced,
+          bookAge, sourceProgress: state.bookSource?.progress, sourceHeading, sourceIdentity,
+          sourceViewport: state.bookSource?.viewport, inventoryStatus: inventory.status || 'idle',
+          palette: color, accent, heading: headingBox, identity: identityBox, inventory: inventoryBox,
+          book: bookBox, folio: measuredFolio });
+      } finally { ctx.restore(); }
+    }
     function cubic(a, b, c, d, t) {
       const s = 1 - t;
       return s * s * s * a + 3 * s * s * t * b + 3 * s * t * t * c + t * t * t * d;
@@ -866,12 +913,22 @@
       const sourceConstruction = smooth(section(srcProgress, 0, .27));
       const sourceLocked = smooth(section(srcProgress, .57, .81));
       const sourceCapital = section(srcProgress, .18, .90);
+      const motionByDelay = new Map();
       const phasePoint = (sourcePoint, bindingPoint, pagePoint, delay = 0) => {
-        const fold = delay ? smooth(section(bookAge, delay, .78 + delay)) : gather;
-        const unfold = delay ? smooth(section(bookAge, .62 + delay, 1.75 + delay)) : spread;
+        if (bookAge <= delay) return sourcePoint;
+        if (bookAge >= 1.75 + delay) return pagePoint;
+        // Every point in an arch shares its motion clock. Calculate easing
+        // and the swing only once per lane, not once per sampled vertex.
+        let motion = motionByDelay.get(delay);
+        if (!motion) {
+          const fold = delay ? smooth(section(bookAge, delay, .78 + delay)) : gather;
+          const unfold = delay ? smooth(section(bookAge, .62 + delay, 1.75 + delay)) : spread;
+          motion = { fold, unfold, swing: fold > 0 && fold < 1 ? Math.sin(fold * Math.PI) * (1 - unfold) : 0 };
+          motionByDelay.set(delay, motion);
+        }
+        const { fold, unfold, swing } = motion;
         const xx = lerp(lerp(sourcePoint[0], bindingPoint[0], fold), pagePoint[0], unfold);
         const yy = lerp(lerp(sourcePoint[1], bindingPoint[1], fold), pagePoint[1], unfold);
-        const swing = fold > 0 && fold < 1 ? Math.sin(fold * Math.PI) * (1 - unfold) : 0;
         const side = Math.sign(sourcePoint[0] - x) || Math.sign(pagePoint[0] - folio.center);
         // A bounded outward arc keeps the collecting gate legible before it
         // closes onto the spine. Both endpoints remain the exact source/leaf.
@@ -931,13 +988,22 @@
           const side = path.side, leaf = folio.leaves[side > 0 ? 1 : 0];
           const edge = side > 0 ? leaf.right : leaf.left, lane = 3 + index % 4 * 2;
           const points = path.points.map((point, pointIndex) => {
+            if (path.kind === 'pane') {
+              const u = (point[0] - path.reference.left) / path.reference.width;
+              const v = (point[1] - path.reference.top) / path.reference.height;
+              const y = lerp(leaf.top + 12, leaf.bottom - 8, v), offset = 5 + path.bay * 3 + u * 2;
+              const binding = [folio.center + side * (offset + 3), y];
+              const target = [edge + side * offset, y];
+              return phasePoint(point, binding, target, .025 + path.bay * .02);
+            }
             const q = pointIndex / (path.points.length - 1);
             const binding = [folio.center + side * lane, lerp(folio.bottom + 9, folio.top + 10, q)];
             const target = path.kind === 'rail' ? [edge + side * (5 + q * 8), leaf.bottom + 6 + index % 3 * 3] :
               path.kind === 'crown' ? [folio.center + side * (lane + Math.sin(q * Math.PI) * 2), folio.top + 4 + q * 24] : binding;
             return phasePoint(point, binding, target, .025 + index % 2 * .02);
           });
-          inkPath(points, accent, .58, 1.05);
+          if (path.kind === 'pane') polygon(points, color.pureWhite, 1, color.line, .85);
+          else inkPath(points, accent, .58, 1.05);
         });
         for (let index = 0; index < 2; index++) {
           const side = index ? 1 : -1, column = x + side * columnOffset, leaf = folio.leaves[index];
@@ -1056,6 +1122,7 @@
       }
     }
     function pageWriting(leaf, index) {
+      if (pageWritingCache.has(leaf)) return pageWritingCache.get(leaf);
       const source = state.layout?.book?.[index ? 'right' : 'left'];
       const heading = measured(source?.heading), list = measured(source?.list);
       // The scroll viewport often fills most of the leaf even when it holds a
@@ -1065,7 +1132,9 @@
         clamp((source.occupiedBottom - height / 2) / unit, list.top, list.bottom) : list?.bottom;
       const occupied = list && end > list.top ? { ...list, bottom: end } : null;
       const footer = Number.isFinite(source?.footerY) ? (source.footerY - height / 2) / unit : leaf.bottom;
-      return { heading, list, occupied, end, footer };
+      const writing = { heading, list, occupied, end, footer };
+      pageWritingCache.set(leaf, writing);
+      return writing;
     }
     function pageSealPlacement(leaf, writing) {
       if (!writing.heading || !writing.list || !Number.isFinite(writing.end)) return null;
@@ -1082,6 +1151,15 @@
       const ring = smooth(section(amount, 0, .40));
       const figure = smooth(section(amount, .16, .76));
       const lock = smooth(section(amount, .61, 1));
+      // White enamel sits against a blue-black inset, including in dark mode.
+      // This is part of the travelling imprint, so its blank-space guard and
+      // source-to-page pose stay identical to the rest of the seal.
+      const enamel = smooth(section(amount, .42, .88));
+      if (enamel > 0) {
+        dot(x, y, radius * .34 * enamel, color.line);
+        dot(x, y, radius * .29 * enamel, color.pureWhite);
+        dot(x, y, radius * .215 * enamel, coverInk);
+      }
       // Split rings are engraved in four strokes. The page-specific figures
       // are composed inside them, never pasted in as an opacity transition.
       for (let quarter = 0; quarter < 4; quarter++) {
@@ -1101,8 +1179,8 @@
             [x + Math.cos(a) * radius * .83, y + Math.sin(a) * radius * .83]], figure, color.ink, .75, 1.05 / unit);
         }
         arc(x, y, radius * .68, -Math.PI / 2, -Math.PI / 2 + TAU * figure, color.line, .92, .65 / unit);
-        trace([[x - radius * .16, y], [x + radius * .16, y]], lock, color.ink, .86, 1.35 / unit);
-        trace([[x, y - radius * .16], [x, y + radius * .16]], lock, color.ink, .86, 1.35 / unit);
+        trace([[x - radius * .16, y], [x + radius * .16, y]], lock, color.pureWhite, 1, 1.35 / unit);
+        trace([[x, y - radius * .16], [x, y + radius * .16]], lock, color.pureWhite, 1, 1.35 / unit);
       } else {
         // The facing leaf uses an eight-point woven compass surrounding an
         // almond intersection. Its silhouette deliberately differs from I.
@@ -1150,7 +1228,7 @@
           polygon(local.map(([xx, yy]) => [x + radius * (xx * Math.cos(a) - yy * Math.sin(a)),
             y + radius * (xx * Math.sin(a) + yy * Math.cos(a))]), pinnacle % 2 ? color.ink : accent, .89);
           trace([[x + Math.cos(a) * radius * .75, y + Math.sin(a) * radius * .75],
-            [x + Math.cos(a) * radius * .84, y + Math.sin(a) * radius * .84]], facets, color.white, .91, .75 / unit);
+            [x + Math.cos(a) * radius * .84, y + Math.sin(a) * radius * .84]], facets, color.pureWhite, 1, .75 / unit);
         }
       }
       diamond(x, y, radius * .058 * lock, accent, .9, false);
@@ -1279,7 +1357,7 @@
           const opening = smooth(section(bookAge, .72 + sheet * .13 + index * .035, 1.38 + sheet * .17 + index * .035));
           if (opening <= 0) continue;
           paperContour(folio, leaf, side, opening, (2 - sheet) * 4);
-          ctx.fillStyle = sheet === 2 ? color.white : sheet ? color.paper : color.faint;
+          ctx.fillStyle = sheet === 2 ? color.white : sheet ? color.pureWhite : color.faint;
           ctx.fill(); ctx.strokeStyle = sheet === 2 ? color.ink : color.line; ctx.lineWidth = sheet === 2 ? 1.05 : .8; ctx.stroke();
         }
         const opening = smooth(section(bookAge, .98 + index * .035, 1.72 + index * .035));
@@ -1348,6 +1426,7 @@
       folioConstruction(folio);
       codexLeaves(folio);
       folioSealMigration(folio);
+      drawOrnaments('foreground', folio);
       if (complete) {
         const arrival = reduced ? 1 : smooth(section(progress, .12, .75));
         const stampX = folio.leaves[1].right - 27, stampY = folio.bottom + 30;
@@ -1397,9 +1476,7 @@
       ctx.lineCap = 'butt'; ctx.lineJoin = 'miter'; ctx.setLineDash([]);
       ctx.fillStyle = color.paper; ctx.fillRect(0, 0, width, height);
       ctx.translate(width / 2, height / 2); ctx.scale(unit, unit);
-      window.DSHLateranoOrnaments?.draw(ctx, { width: W, height: H, unit, phase, progress, ambient, reduced,
-        bookAge, sourceProgress: state.bookSource?.progress, sourceHeading, palette: color, accent, heading: headingBox,
-        identity: identityBox, inventory: inventoryBox, book: bookBox });
+      drawOrnaments('background');
       [sealScene, linkScene, identityScene, () => archiveScene(false), () => archiveScene(true), readyScene][phase]();
       const exclusion = phase === 2 ? [identityBox] : phase === 3 || phase === 4 ? [inventoryBox] : [];
       outside(exclusion, interaction);

@@ -5,21 +5,39 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
 function node(value = '') {
+  const writes = [];
   return {
-    _text: value, children: [], attributes: new Map(), classList: { add() {} },
-    style: { setProperty(key, value) { this[key] = value; } },
+    _text: value, children: [], attributes: new Map(), classList: { add() {} }, writes,
+    style: new Proxy({ setProperty(key, value) { this[key] = value; } }, { set(target, key, value) { writes.push(key); target[key] = value; return true; } }),
     get textContent() { return this._text + this.children.map(x => x.textContent).join(''); },
     set textContent(value) { this._text = String(value); this.children = []; },
     replaceChildren(...children) { this._text = ''; this.children = children; },
-    setAttribute(key, value) { this.attributes.set(key, value); },
+    setAttribute(key, value) { writes.push(key); this.attributes.set(key, value); },
   };
 }
-const sandbox = { document: { createElement: () => node() } };
+let segmentCalls = 0;
+class CountingSegmenter {
+  constructor(...args) { this.segmenter = new Intl.Segmenter(...args); }
+  segment(value) { segmentCalls++; return this.segmenter.segment(value); }
+}
+const sandbox = { document: { createElement: () => node() }, Intl: { Segmenter: CountingSegmenter } };
 vm.createContext(sandbox);
 vm.runInContext(fs.readFileSync(path.join(__dirname, '../docs/startup-text.js'), 'utf8'), sandbox);
 const { sample, View, Stage, characters } = sandbox.DSHText;
 const literal = 'CatShark 深潜 👩🏽‍💻 <plugin>&';
 assert.equal(characters('👩🏽‍💻').length, 1, 'animation must keep grapheme clusters intact');
+const beforeSettled = segmentCalls;
+for (const kind of ['roll', 'mask', 'type', 'decode']) sample('settled-only 🧑🏽‍🚀 ' + kind, 9, { kind });
+assert.equal(segmentCalls, beforeSettled, 'settled text must not invoke grapheme segmentation at all');
+const compound = 'A\u0301👩🏽‍💻🇦🇺猫';
+const originalClusters = Array.from(characters(compound)), afterFirst = segmentCalls;
+assert.deepEqual(originalClusters, ['A\u0301', '👩🏽‍💻', '🇦🇺', '猫']);
+assert.deepEqual(Array.from(characters(compound)), originalClusters);
+assert.equal(segmentCalls, afterFirst, 'repeated real names must reuse their parsed graphemes');
+for (let index = 0; index < 1000; index++) characters('temporary-scan-name-' + index);
+const beforeEvicted = segmentCalls;
+assert.deepEqual(Array.from(characters(compound)), originalClusters, 'cache eviction must not corrupt combining or joined Unicode characters');
+assert.equal(segmentCalls, beforeEvicted + 1, 'a long scan must evict old names instead of retaining an unbounded grapheme cache');
 for (const kind of ['roll', 'mask', 'type', 'decode']) {
   for (const age of [0, .15, .4, .82, 2, -10, Infinity, NaN]) {
     const frame = sample(literal, age, { kind });
@@ -37,7 +55,16 @@ assert.equal(label.textContent, literal, 'real data must remain accessible durin
 assert.equal(label.style.transform, undefined, 'do not transform the measured host/card/row');
 assert.notEqual(label.style['--dsh-ink-cover'], '0.00000');
 view.render(1, false); assert.equal(label.style['--dsh-ink-cover'], '0.00000');
+const settledWrites = label.writes.length + view.ink.writes.length;
+view.render(2, false); view.render(3, false);
+assert.equal(label.writes.length + view.ink.writes.length, settledWrites, 'settled labels must not repeatedly touch DOM styles');
+view.render(.2, false);
+assert.notEqual(label.style['--dsh-ink-cover'], '0.00000', 'a rewind must leave the settled fast path and restore the earlier lettering pose');
+view.render(2, false); view.set(compound); view.render(.2, false);
+assert.equal(label.textContent, compound, 'new real text must replace cached settled text literally');
+assert.notEqual(label.style['--dsh-ink-cover'], '0.00000', 'a changed label must animate even after its previous value settled');
 view.render(.2, true); assert.equal(view.ink.style.clipPath, 'none');
+view.render(.2, false); assert.notEqual(label.style['--dsh-ink-cover'], '0.00000', 'disabling reduced motion at the same early age must restore its actual motion pose');
 const stage = new Stage({ querySelectorAll: () => [] });
 stage.begin(3, 0, 4, false); stage.set(label, '…', { kind: 'roll' }); stage.render();
 assert.equal(label.textContent, '…', 'unknown inventory remains unknown during loading');

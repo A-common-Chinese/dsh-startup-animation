@@ -9,11 +9,67 @@ const { createHash } = require('node:crypto');
 const sandbox = { window: {} };
 vm.createContext(sandbox);
 for (const name of ['startup-laterano-emblem.js', 'startup-text.js', 'startup-laterano-ornaments.js', 'startup-laterano.js']) {
-  vm.runInContext(fs.readFileSync(path.join(__dirname, '../docs', name), 'utf8'), sandbox, { filename: name });
+  const source = process.argv.includes('--benchmark') && process.env.DSH_BENCH_REV
+    ? require('node:child_process').execFileSync('git', ['show', `${process.env.DSH_BENCH_REV}:docs/${name}`], { encoding: 'utf8', cwd: path.join(__dirname, '..') })
+    : fs.readFileSync(path.join(__dirname, '../docs', name), 'utf8');
+  vm.runInContext(source, sandbox, { filename: name });
 }
 const { draw, phaseCount } = sandbox.window.DSHLateranoVisuals;
 assert.equal(phaseCount, 6);
 assert.ok(sandbox.window.DSHLateranoEmblem.parts.length >= 3, 'render the shipped emblem rather than a fixture');
+
+// Optional diagnostic mode: run the real geometry against a non-rasterizing
+// Canvas shim. Times are observations, not CI thresholds or browser FPS claims.
+if (process.argv.includes('--benchmark')) {
+  const canvasMethods = ['translate', 'scale', 'rotate', 'transform', 'setLineDash', 'beginPath', 'closePath', 'clip', 'fill', 'stroke', 'moveTo', 'lineTo', 'bezierCurveTo', 'arc', 'rect', 'fillRect', 'fillText'];
+  const countedCanvas = () => {
+    const calls = {}, stack = [], style = { globalAlpha: 1, globalCompositeOperation: 'source-over', fillStyle: '#000', strokeStyle: '#000', lineWidth: 1,
+      lineCap: 'butt', lineJoin: 'miter', font: '12px sans-serif', textAlign: 'left', textBaseline: 'alphabetic' };
+    const count = name => { calls[name] = (calls[name] || 0) + 1; };
+    const ctx = {
+      save() { count('save'); stack.push({ ...style }); },
+      restore() { count('restore'); Object.assign(style, stack.pop()); },
+      measureText(value) {
+        count('measureText'); const size = Number(style.font.match(/([\d.]+)px/)?.[1] || 12);
+        return { width: [...String(value)].reduce((sum, char) => sum + size * (char.charCodeAt(0) > 255 ? 1 : .58), 0) };
+      },
+    };
+    for (const key of Object.keys(style)) Object.defineProperty(ctx, key, { get: () => style[key], set: value => { style[key] = value; } });
+    for (const name of canvasMethods) ctx[name] = () => count(name);
+    return { ctx, calls, clear() { for (const key of Object.keys(calls)) calls[key] = 0; } };
+  };
+  const page = x => ({ x, y: 330, width: 426, height: 300,
+    heading: { x: x + 30, y: 354, width: 366, height: 40 },
+    list: { x: x + 30, y: 406, width: 366, height: 192 }, occupiedBottom: 448, footerY: 598 });
+  const left = page(198), right = page(644);
+  const book = { x: 198, y: 330, width: 872, height: 300, gutterX: 634, spread: true, left, right };
+  const source = { heading: { x: 295, y: 122, width: 690, height: 128 }, identity: { x: 420, y: 320, width: 440, height: 245 } };
+  const base = { phase: 3, visualProgress: 1, progress: 1, bookOpen: 1, bookAge: 3, textAge: 4, light: true, identity: 'BENCHMARK OPERATOR',
+    pointer: [.5, .5], drag: 0, impulse: 0, inventory: { status: 'complete', skills: [{ name: 'actual-skill' }], plugins: [{ name: 'actual-plugin' }], issues: [] },
+    layout: { heading: { x: 295, y: 150, width: 690, height: 128 }, inventory: book, book },
+    bookSource: { phase: 2, progress: 1, viewport: { width: 1280, height: 720 }, layout: source } };
+  const cases = [
+    ['identity', { phase: 2, layout: source }], ['book-source', { bookAge: 0, bookOpen: 0 }],
+    ['book-gather', { bookAge: .65, bookOpen: 0 }], ['book-leaves', { bookAge: 1.25, bookOpen: 0 }],
+    ['book-opening', { bookAge: 1.7, bookOpen: .55 }], ['book-settled', { bookAge: 3 }], ['registration', { phase: 4 }],
+  ];
+  const observations = [];
+  for (const [name, state] of cases) {
+    const counter = countedCanvas(), fixture = { ...base, ...state };
+    for (let index = 0; index < 40; index++) draw(counter.ctx, 1280, 720, fixture);
+    counter.clear(); draw(counter.ctx, 1280, 720, fixture);
+    const calls = { ...counter.calls }, timings = [];
+    for (let index = 0; index < 180; index++) {
+      const start = performance.now(); draw(counter.ctx, 1280, 720, fixture); timings.push(performance.now() - start);
+    }
+    timings.sort((a, b) => a - b);
+    observations.push({ name, median_ms: +timings[90].toFixed(3), p95_ms: +timings[171].toFixed(3),
+      canvas_calls: Object.values(calls).reduce((sum, count) => sum + count, 0), strokes: calls.stroke || 0, fills: calls.fill || 0,
+      line_segments: calls.lineTo || 0, text_measurements: calls.measureText || 0, clips: calls.clip || 0 });
+  }
+  console.log(JSON.stringify({ source: process.env.DSH_BENCH_REV || 'working tree', note: 'Node geometry only; excludes rasterization, DOM, layout and compositor.', observations }, null, 2));
+  process.exit(0);
+}
 
 function recordingContext() {
   const records = [], stack = [], paintings = [];
@@ -133,15 +189,23 @@ const base = { identity: 'CatShark / 星海', inventory, choice: 1, pointer: [.8
 // cannot cancel one another through even-odd parity.
 const ornamentsDraw = sandbox.window.DSHLateranoOrnaments?.draw;
 assert.equal(typeof ornamentsDraw, 'function', 'the shipped celestial module must be loaded by renderer tests');
-const skyPalette = { paper: '#f6f7f6', ink: '#101820', blue: '#195acc', line: '#a5bfd4', faint: '#dce6ed', soft: '#60768d', white: '#ffffff' };
+const skyPalette = { paper: '#e9eef4', ink: '#101820', blue: '#195acc', line: '#a5bfd4', faint: '#dce6ed', soft: '#60768d', white: '#ffffff' };
 function renderSky(width, height, state = {}) {
   const recorder = recordingContext(), unit = Math.min(width, height) / 1000;
   const designBox = box => box ? { left: (box.x - width / 2) / unit, top: (box.y - height / 2) / unit,
     right: (box.x + box.width - width / 2) / unit, bottom: (box.y + box.height - height / 2) / unit } : null;
   recorder.ctx.save(); recorder.ctx.translate(width / 2, height / 2); recorder.ctx.scale(unit, unit);
-  ornamentsDraw(recorder.ctx, { width: width / unit, height: height / unit, unit, phase: 2, progress: 1,
+  const folio = state.folio && { center: (state.folio.center - width / 2) / unit,
+    top: (state.folio.top - height / 2) / unit, bottom: (state.folio.bottom - height / 2) / unit,
+    leaves: state.folio.leaves.map(leaf => ({ ...designBox(leaf), writing: leaf.writing && {
+      heading: designBox(leaf.writing.heading), list: designBox(leaf.writing.list), occupied: designBox(leaf.writing.occupied),
+      end: (leaf.writing.end - height / 2) / unit, footer: (leaf.writing.footer - height / 2) / unit,
+    } })) };
+  const input = { width: width / unit, height: height / unit, unit, phase: 2, progress: 1,
     ambient: 0, reduced: false, bookAge: 3, palette: skyPalette, accent: '#159dcc', ...state,
-    heading: designBox(state.heading), sourceHeading: designBox(state.sourceHeading), identity: designBox(state.identity), inventory: designBox(state.inventory) });
+    heading: designBox(state.heading), sourceHeading: designBox(state.sourceHeading), identity: designBox(state.identity),
+    sourceIdentity: designBox(state.sourceIdentity), inventory: designBox(state.inventory), folio };
+  for (const layer of state.layer ? [state.layer] : ['background', 'foreground']) ornamentsDraw(recorder.ctx, { ...input, layer });
   recorder.ctx.restore();
   return { hash: recorder.finish(), records: recorder.records, paintings: recorder.paintings };
 }
@@ -161,14 +225,25 @@ for (const [width, height] of [[1280, 720], [390, 844], [2560, 360], [360, 1600]
   const heading = { x: width * .28, y: height * .20, width: width * .44, height: height * .20 };
   const identity = { x: width * .29, y: height * .36, width: width * .42, height: height * .43 };
   const inventoryBox = { x: width * .09, y: height * .37, width: width * .82, height: height * .49 };
+  const leaves = [0, 1].map(index => {
+    const x = inventoryBox.x + index * inventoryBox.width * .51, y = inventoryBox.y, w = inventoryBox.width * .49, h = inventoryBox.height;
+    return { x, y, width: w, height: h, writing: {
+      heading: { x: x + w * .08, y: y + h * .08, width: w * .84, height: h * .16 },
+      list: { x: x + w * .08, y: y + h * .20, width: w * .84, height: h * .67 },
+      occupied: { x: x + w * .08, y: y + h * .20, width: w * .84, height: h * .43 }, end: y + h * .63, footer: y + h * .87,
+    } };
+  });
+  const folio = { center: width / 2, top: inventoryBox.y, bottom: inventoryBox.y + inventoryBox.height, leaves };
   for (const phase of [2, 3, 4]) {
-    const state = { phase, heading, identity, inventory: inventoryBox };
-    const full = renderSky(width, height, state), reading = phase === 2 ? identity : inventoryBox;
-    assert.ok(full.paintings.length > 0, 'the celestial background must actually paint vector ornaments');
+    const state = { phase, heading, identity, inventory: inventoryBox, folio };
+    const full = renderSky(width, height, state), readings = phase === 2 ? [identity] : leaves.flatMap(leaf => [leaf.writing.heading, leaf.writing.occupied]);
+    assert.ok(full.paintings.length > 0, 'the two celestial passes must actually paint vector ornaments');
+    assert.equal(renderSky(width, height, { ...state, layer: phase === 2 ? 'foreground' : 'background' }).paintings.length, 0,
+      'each sun, moon and star must have one owning layer without a duplicate or opacity handoff');
     for (const paint of full.paintings) {
-      const titleClip = textExclusion(paint, heading), readingClip = textExclusion(paint, reading);
-      assert.ok(titleClip && readingClip && titleClip !== readingClip,
-        'every celestial mark must keep independent exclusions for the overlapping real title and reading surface');
+      const exclusions = [heading, ...readings].map(box => textExclusion(paint, box));
+      assert.ok(exclusions.every(Boolean) && new Set(exclusions).size === exclusions.length,
+        'every celestial mark must independently protect the real title, page headings and occupied text even when their rectangles overlap');
     }
     assert.equal(full.hash, renderSky(width, height, { ...state, ambient: 80, bookAge: 80 }).hash, 'completed celestial geometry must settle instead of orbiting through the text');
     assert.equal(renderSky(width, height, { ...state, reduced: true, progress: 0, sourceProgress: 0, bookAge: 0 }).hash,
@@ -186,7 +261,7 @@ for (const [width, height] of [[1280, 720], [390, 844], [2560, 360], [360, 1600]
     'the celestial elements must construct across multiple moments');
   const skyInk = sample => sample.paintings.map(({ clips, ...paint }) => paint);
   for (const progress of [.4, .63, 1]) assert.deepEqual(
-    skyInk(renderSky(width, height, { phase: 3, bookAge: 0, sourceProgress: progress, heading, inventory: inventoryBox })),
+    skyInk(renderSky(width, height, { phase: 3, bookAge: 0, sourceProgress: progress, heading, sourceIdentity: identity, inventory: inventoryBox, folio })),
     skyInk(renderSky(width, height, { phase: 2, progress, heading, identity })),
     'the book must inherit the actual partially assembled sky rather than replace it at the identity boundary');
   assert.deepEqual(skyInk(renderSky(width, height, { phase: 3, bookAge: .8, sourceProgress: .63 })),
@@ -206,6 +281,80 @@ for (const progress of [.4, .63, 1]) {
       heading: bookHeading, sourceHeading: broadIdentityHeading });
     assert.deepEqual(celestialInk(incomingSky), celestialInk(sourceSky),
       'title-avoiding medallions must inherit the displaced source pose before moving around the new book heading');
+  }
+}
+
+// Follow the same opaque sun and crescent through their actual vector paths.
+// They travel to the spine and reopen as page clasps; a decorative fade-in at
+// the destination would fail these positional and ownership checks.
+const skyPage = x => ({ x, y: 330, width: 418, height: 292, writing: {
+  heading: { x: x + 28, y: 346, width: 362, height: 42 },
+  list: { x: x + 28, y: 402, width: 362, height: 193 },
+  occupied: { x: x + 28, y: 402, width: 362, height: 58 }, end: 460, footer: 595,
+} });
+const celestialFolio = { center: 636, top: 330, bottom: 622, leaves: [skyPage(200), skyPage(656)] };
+const skySourceIdentity = { x: 420, y: 315, width: 440, height: 260 };
+const celestialState = { phase: 3, sourceProgress: 1, sourceHeading: broadIdentityHeading, sourceIdentity: skySourceIdentity,
+  heading: { x: 265, y: 165, width: 752, height: 126 }, sourceViewport: { width: 1280, height: 720 }, folio: celestialFolio };
+function skyBodies(sample) {
+  const sun = sample.paintings.find(paint => paint.op === 'fill' && paint.commands.length === 1 &&
+    paint.commands[0].op === 'arc' && Math.abs(paint.commands[0].args[4] - paint.commands[0].args[3] - Math.PI * 2) < 1e-8);
+  const moon = sample.paintings.find(paint => paint.op === 'fill' && paint.commands.filter(command => command.op === 'bezierCurveTo').length === 2);
+  assert.ok(sun && moon, 'both the solar disc and actual crescent must survive every part of the handoff');
+  assert.ok([sun, moon].every(paint => paint.globalAlpha === 1 && ['#ffffff', '#fff'].includes(paint.fillStyle)),
+    'the moving emblems must stay opaque white rather than crossfade or become paper-coloured erasers');
+  return [{ paint: sun, point: screenPoint(sun.commands[0]) }, { paint: moon, point: screenPoint(moon, 0, 0) }];
+}
+const skyFrame = (bookAge, extra = {}) => renderSky(1280, 720, { ...celestialState, bookAge, ...extra });
+const startBodies = skyBodies(skyFrame(0));
+const unmeasuredFolio = { ...celestialFolio, leaves: [{ ...celestialFolio.leaves[0], writing: undefined }, celestialFolio.leaves[1]] };
+for (const paint of skyFrame(3, { folio: unmeasuredFolio }).paintings) {
+  assert.ok(textExclusion(paint, unmeasuredFolio.leaves[0]), 'a not-yet-measured page must be protected in full instead of guessing where its real text ends');
+  assert.ok(textExclusion(paint, unmeasuredFolio.leaves[1].writing.occupied), 'the other measured page must keep its independent actual-text guard');
+}
+for (const age of [0, .2, .6, .82, 1.15, 1.6, 2.15, 2.7]) {
+  const bodies = skyBodies(skyFrame(age)), next = skyBodies(skyFrame(age + .00001));
+  bodies.forEach((body, index) => assert.ok(Math.hypot(...body.point.map((value, axis) => value - next[index].point[axis])) < .1,
+    'sun and moon must move continuously through gathering, turning and opening'));
+}
+for (let index = 0; index < 2; index++) {
+  const sourceDistance = Math.abs(startBodies[index].point[0] - celestialFolio.center);
+  const closest = Math.min(...[.65, .8, .95].map(age => Math.abs(skyBodies(skyFrame(age))[index].point[0] - celestialFolio.center)));
+  assert.ok(closest < sourceDistance * .35, 'each sky emblem must visibly travel into the binding before opening out');
+  const final = skyBodies(skyFrame(3))[index].point, leaf = celestialFolio.leaves[index];
+  assert.ok(Math.abs(final[0] - (index ? leaf.x + leaf.width : leaf.x)) < 32 && final[1] > leaf.y && final[1] < leaf.y + leaf.height,
+    'the original sun and moon must become clasps registered to the measured outer page edges');
+}
+assert.deepEqual(celestialInk(skyFrame(3)), celestialInk(skyFrame(80, { ambient: 800 })), 'completed celestial binding must settle');
+assert.deepEqual(celestialInk(skyFrame(1.05)), celestialInk(skyFrame(1.05, { phase: 4 })),
+  'real inventory completion must not restart the celestial clock');
+const crowdedFolio = { ...celestialFolio, leaves: celestialFolio.leaves.map(leaf => ({ ...leaf, writing: {
+  ...leaf.writing, occupied: leaf.writing.list, end: leaf.writing.footer,
+} })) };
+for (const status of ['loading', 'complete', 'failed', 'cancelled']) for (const age of [.4, 1.25, 3]) {
+  assert.deepEqual(celestialInk(skyFrame(age, { inventoryStatus: status })),
+    celestialInk(skyFrame(age, { inventoryStatus: status, folio: crowdedFolio })),
+    'growing real rows must update their text exclusions without teleporting sky emblems or changing the animation');
+  const crowded = skyFrame(age, { inventoryStatus: status, folio: crowdedFolio });
+  for (const paint of crowded.paintings) for (const leaf of crowdedFolio.leaves) {
+    assert.ok(textExclusion(paint, leaf.writing.heading) && textExclusion(paint, leaf.writing.occupied),
+      'moving white ornaments must remain clipped away from full or wrapped real lists');
+  }
+}
+// Resize halfway through the source pose: the saved sky must retain a single
+// similarity transform, including wide-title avoidance and rotated crescents.
+for (const [width, height] of [[390, 844], [1280, 420], [896, 504]]) {
+  const scale = Math.min(width / 1280, height / 720);
+  const fitPoint = point => [width / 2 + (point[0] - 640) * scale, height / 2 + (point[1] - 360) * scale];
+  const fitBox = box => { const [x, y] = fitPoint([box.x, box.y]); return { x, y, width: box.width * scale, height: box.height * scale }; };
+  for (const progress of [.4, .63, 1]) {
+    const outgoing = renderSky(1280, 720, { phase: 2, progress, heading: broadIdentityHeading, identity: skySourceIdentity });
+    const incoming = renderSky(width, height, { ...celestialState, bookAge: 0, sourceProgress: progress,
+      sourceHeading: fitBox(broadIdentityHeading), sourceIdentity: fitBox(skySourceIdentity) });
+    const expected = outgoing.paintings.flatMap(pathSegments).flat().map(fitPoint), actual = incoming.paintings.flatMap(pathSegments).flat();
+    assert.equal(actual.length, expected.length, 'resizing must retain all saved celestial geometry');
+    assert.ok(expected.every((point, index) => Math.hypot(point[0] - actual[index][0], point[1] - actual[index][1]) < 1e-6),
+      'source sky must project uniformly at age zero, including the saved title-avoiding pose');
   }
 }
 let samples = 0, maxCommands = 0;
@@ -465,7 +614,7 @@ assert.notEqual(render(1280, 720, { ...base, phase: 0, progress: .45, textAge: 3
 for (const phase of [0, 1, 5]) {
   const { records } = render(1280, 720, { ...base, phase, reducedMotion: true, impulse: 0 });
   const shield = records.findIndex((record, index) => record.op === 'arc' && record.args[0] === 0 && record.args[1] === -5 && record.args[2] === 102 &&
-    records[index + 1]?.op === 'fill' && records[index + 1]?.fillStyle === '#f6f7f6' && records[index + 1]?.globalAlpha === 1);
+    records[index + 1]?.op === 'fill' && records[index + 1]?.fillStyle === '#e9eef4' && records[index + 1]?.globalAlpha === 1);
   assert.ok(shield >= 0, `phase ${phase} must clear construction lines behind the DSH seal`);
   assert.ok(records.slice(shield + 1).some(record => record.op === 'fill' && record.args[0] === 'evenodd'),
     'seal ink must be laid down after its clean medallion');
@@ -477,7 +626,7 @@ const rays = rich.filter(record => record.op === 'moveTo' && Math.abs(record.arg
 assert.equal(rays.length, 24, 'the radiant seal must construct its full set of alternating rays');
 assert.equal(new Set(rays.map(record => record.matrix.slice(0, 4).map(value => value.toFixed(6)).join(','))).size, 24,
   'the seal rays must occupy distinct radial directions');
-const paperBridges = rich.filter(record => record.op === 'stroke' && record.strokeStyle === '#f6f7f6' && record.lineWidth === 5);
+const paperBridges = rich.filter(record => record.op === 'stroke' && record.strokeStyle === '#e9eef4' && record.lineWidth === 5);
 assert.ok(paperBridges.length >= 2, 'the manuscript braid needs paper knockouts at alternating crossings');
 assert.ok(rich.filter(record => record.op === 'stroke' && record.lineWidth === 1.45).length > paperBridges.length,
   'the braid must redraw continuous ink above its paper crossings');
@@ -509,9 +658,18 @@ for (const [width, height, page] of [
 // this fails if a new approximate portal is simply faded in at the next chapter.
 const mainArches = records => paintedPaths(records).filter(path => path.op === 'stroke' && path.lineWidth === 2.3 && path.globalAlpha === .88);
 const windowTracery = sample => sample.paintings.filter(paint => paint.op === 'stroke' && paint.lineWidth === 1.05 && paint.globalAlpha === .58);
-const folioPaper = records => paintedPaths(records).filter(path => path.op === 'fill' &&
-  ['#183459', '#294974', '#dce6ed', '#1c3047', '#f6f7f6', '#0c1424', '#ffffff', '#101c2d'].includes(path.fillStyle) &&
-  path.commands.filter(command => command.op === 'bezierCurveTo').length >= 3);
+const windowPanes = sample => sample.paintings.filter((paint, index) => paint.op === 'fill' &&
+  ['#fff', '#ffffff'].includes(paint.fillStyle) && paint.globalAlpha === 1 &&
+  paint.commands.filter(command => command.op === 'lineTo').length > 20 &&
+  sample.paintings[index + 1]?.op === 'stroke' && sample.paintings[index + 1]?.lineWidth === .85 &&
+  ['#a5bfd4', '#35516e'].includes(sample.paintings[index + 1]?.strokeStyle));
+const folioPaper = records => {
+  const paths = paintedPaths(records);
+  return paths.flatMap((path, index) => path.op === 'fill' &&
+    ['#183459', '#294974', '#dce6ed', '#1c3047', '#e9eef4', '#0c1424', '#ffffff', '#101c2d'].includes(path.fillStyle) &&
+    path.commands.filter(command => command.op === 'bezierCurveTo').length >= 3
+    ? [{ ...path, contourWeight: paths[index + 1]?.op === 'stroke' ? paths[index + 1].lineWidth : null }] : []);
+};
 const pathBounds = path => {
   const points = pathSegments(path).flat();
   return { left: Math.min(...points.map(point => point[0])), right: Math.max(...points.map(point => point[0])),
@@ -569,6 +727,11 @@ for (const [width, height, book] of [
     assert.equal(nextWindow.length, oldWindow.length, 'the book must inherit the full window construction, including partial strokes');
     assert.ok(oldWindow.every((point, index) => Math.hypot(point[0] - nextWindow[index][0], point[1] - nextWindow[index][1]) < 1e-6),
       'church window ink must remain continuous at the identity-to-book handoff');
+    const oldPanes = windowPanes(old).flatMap(pathSegments).flat(), nextPanes = windowPanes(next).flatMap(pathSegments).flat();
+    assert.ok(oldPanes.length > 0, 'the portal must include actual opaque white window panes');
+    assert.equal(nextPanes.length, oldPanes.length, 'white panes must transfer as the same complete shapes');
+    assert.ok(oldPanes.every((point, index) => Math.hypot(point[0] - nextPanes[index][0], point[1] - nextPanes[index][1]) < 1e-6),
+      'white window faces must recompose with the existing ink rather than pop in as a new layer');
   }
   for (const progress of [.55, .63, 1]) {
     const old = render(width, height, { ...base, phase: 2, visualProgress: progress, impulse: 0, layout: sourceLayout });
@@ -602,20 +765,19 @@ for (const [width, height, book] of [
   const covers = folioPaper(frame(.6).records);
   assert.ok(covers.length > 0 && covers.every(path => path.fillStyle === '#183459'), 'covers lead the construction before any paper leaf opens');
   const midPaper = folioPaper(frame(.90).records);
-  assert.ok(midPaper.some(path => path.fillStyle === '#dce6ed') && midPaper.some(path => path.fillStyle === '#f6f7f6'),
+  assert.ok(midPaper.some(path => path.fillStyle === '#dce6ed') && midPaper.some(path => path.fillStyle === '#ffffff'),
     'the two underleaves must already be following the cover on distinct delayed trajectories');
-  assert.ok(!midPaper.some(path => path.fillStyle === '#ffffff'), 'the main white leaf must enter after the underleaves');
+  assert.ok(!midPaper.some(path => path.contourWeight === 1.05), 'the main writing leaf must enter after the underleaves');
   const latePaper = folioPaper(frame(1.2).records);
-  assert.ok(latePaper.some(path => path.fillStyle === '#ffffff'), 'the final writing leaf must eventually open');
+  assert.ok(latePaper.some(path => path.contourWeight === 1.05 && path.fillStyle === '#ffffff'), 'the final white writing leaf must eventually open');
   const leftSheets = latePaper.filter(path => pathBounds(path).right <= book.gutterX + .001);
-  const byColor = ink => pathBounds(leftSheets.find(path => path.fillStyle === ink));
-  assert.ok(byColor('#183459').left < byColor('#dce6ed').left && byColor('#dce6ed').left < byColor('#f6f7f6').left &&
-    byColor('#f6f7f6').left < byColor('#ffffff').left,
+  assert.equal(leftSheets.length, 4, 'the moving spread must include its cover and three separate physical sheets');
+  assert.ok(leftSheets.slice(1).every((sheet, index) => pathBounds(leftSheets[index]).left < pathBounds(sheet).left),
     'cover, underleaves and writing leaf must have visibly distinct extents during the staggered opening');
 
   const complete = frame(2.5, { bookOpen: 1 }), registered = frame(2.5, { phase: 4, bookOpen: 1 });
   const fullPaper = folioPaper(complete.records);
-  const writingLeaves = fullPaper.filter(path => path.fillStyle === '#ffffff');
+  const writingLeaves = fullPaper.filter(path => path.contourWeight === 1.05 && path.fillStyle === '#ffffff');
   assert.equal(writingLeaves.length, 2, 'the completed spread must retain two writing surfaces');
   for (const leaf of writingLeaves) {
     const bounds = pathBounds(leaf), left = bounds.right <= book.gutterX;
@@ -660,6 +822,11 @@ for (const [width, height, book] of [
     assert.equal(actualWindow.length, expectedWindow.length, 'responsive handoff must retain all source window tracery');
     assert.ok(expectedWindow.every((point, index) => Math.hypot(point[0] - actualWindow[index][0], point[1] - actualWindow[index][1]) < 1e-6),
       'window tracery must resize together with the portal, without recomposing a different source');
+    const expectedPanes = windowPanes(original).flatMap(pathSegments).flat().map(fitPoint);
+    const actualPanes = windowPanes(resized).flatMap(pathSegments).flat();
+    assert.equal(actualPanes.length, expectedPanes.length, 'source white panes must survive responsive projection');
+    assert.ok(expectedPanes.every((point, index) => Math.hypot(point[0] - actualPanes[index][0], point[1] - actualPanes[index][1]) < 1e-6),
+      'opaque white faces must share the source tracery similarity transform');
   }
   const fallback = frame(0, { bookSource: null });
   assert.ok(mainArches(fallback.records).length, 'direct chapter entry must still construct a portal without a captured source');

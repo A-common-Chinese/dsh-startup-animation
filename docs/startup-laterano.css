@@ -3,9 +3,9 @@
 .visual-style-setting label{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .visual-style-setting select{max-width:220px;padding:9px;color:var(--ink);background:var(--bg);border:1px solid var(--line)}
 .visual-style-setting p{margin:0;color:var(--soft);font-size:10px;line-height:1.6}
-:root[data-visual-style=laterano]{--ink:#101b2e;--soft:#596f96;--accent:#2362d5;--line:#b4c6e1;--panel:#f8fafdf7;--bg:#f1f5fb;--stage-unit:clamp(.75px,.111111vmin,1.6px)}
+:root[data-visual-style=laterano]{--ink:#101b2e;--soft:#596f96;--accent:#2362d5;--line:#b4c6e1;--panel:#ffffff;--bg:#e9eef4;--stage-unit:clamp(.75px,.111111vmin,1.6px)}
 :root[data-visual-style=laterano][data-theme=dark]{--ink:#eef4ff;--soft:#a0b4d6;--accent:#8bb8ff;--line:#3b5278;--panel:#101c32f7;--bg:#0e182a}
-:root[data-visual-style=laterano] body.on-black{--ink:#101b2e;--soft:#596f96;--accent:#2362d5;--line:#b4c6e1;--panel:#f8fafdf7}
+:root[data-visual-style=laterano] body.on-black{--ink:#101b2e;--soft:#596f96;--accent:#2362d5;--line:#b4c6e1;--panel:#ffffff}
 :root[data-visual-style=laterano][data-theme=dark] body.on-black{--ink:#eef4ff;--soft:#a0b4d6;--accent:#8bb8ff;--line:#3b5278;--panel:#101c32f7}
 [data-visual-style=laterano] .vignette{box-shadow:none}
 [data-visual-style=laterano] h1{font-family:"Noto Serif SC","Source Han Serif SC","SimSun","Songti SC",serif;font-weight:400;letter-spacing:.22em;text-indent:.22em}
@@ -13,14 +13,14 @@
 [data-visual-style=laterano] .phase-note{font-weight:400;letter-spacing:.17em}
 /* Only the glyph edge receives contrast; the architectural background stays
    continuous through the headline's otherwise transparent layout box. */
-[data-visual-style=laterano]{--scene-paper:#f6f7f6}
+[data-visual-style=laterano]{--scene-paper:#e9eef4}
 [data-visual-style=laterano][data-theme=dark]{--scene-paper:#0c1424}
 [data-visual-style=laterano] :is(#phaseEnglish,#phaseTitle,#phaseNote) .dsh-text-ink{text-shadow:-1px -1px 0 var(--scene-paper),0 -1px 0 var(--scene-paper),1px -1px 0 var(--scene-paper),-1px 0 0 var(--scene-paper),1px 0 0 var(--scene-paper),-1px 1px 0 var(--scene-paper),0 1px 0 var(--scene-paper),1px 1px 0 var(--scene-paper)}
 [data-visual-style=laterano] .brand b{font-family:Georgia,"Times New Roman",serif;font-weight:400;letter-spacing:2px;font-size:31px}
 [data-visual-style=laterano] .brand-bottom em{background:var(--accent);color:var(--bg)}
 [data-visual-style=laterano] .identity-card{border-top:1px solid var(--accent);background:var(--panel)}
 [data-visual-style=laterano] .identity-card .identity-label{font-family:"SimSun","Songti SC",serif;font-weight:400;letter-spacing:.22em}
-[data-visual-style=laterano] .identity-card:before,[data-visual-style=laterano] .identity-card:after{content:"";position:absolute;width:7px;height:7px;border:1px solid var(--accent);background:var(--bg);pointer-events:none;transform:translate(-50%,-50%) rotate(45deg)}
+[data-visual-style=laterano] .identity-card:before,[data-visual-style=laterano] .identity-card:after{content:"";position:absolute;width:7px;height:7px;border:1px solid var(--accent);background:#fff;pointer-events:none;transform:translate(-50%,-50%) rotate(45deg)}
 [data-visual-style=laterano] .identity-card:before{left:0;top:0}
 [data-visual-style=laterano] .identity-card:after{left:100%;top:100%}
 [data-visual-style=laterano] .inventory-column{border-top:1px solid var(--accent)}

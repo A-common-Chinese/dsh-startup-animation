@@ -7,19 +7,32 @@
   'use strict';
   const clamp = n => Math.max(0, Math.min(1, n));
   const segmenter = typeof Intl?.Segmenter === 'function' ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
-  const characters = value => segmenter ? [...segmenter.segment(value)].map(x => x.segment) : Array.from(value);
+  // Names and paths repeat on every animation frame. Retain a small, bounded
+  // grapheme cache instead of running Intl.Segmenter for every visible row.
+  const glyphCache = new Map();
+  const characters = value => {
+    const text = String(value ?? '');
+    if (glyphCache.has(text)) return glyphCache.get(text);
+    const glyphs = Object.freeze(segmenter ? [...segmenter.segment(text)].map(x => x.segment) : Array.from(text));
+    if (text.length <= 1024) {
+      if (glyphCache.size >= 256) glyphCache.delete(glyphCache.keys().next().value);
+      glyphCache.set(text, glyphs);
+    }
+    return glyphs;
+  };
   const hash = value => { let n = 2166136261; for (const c of value) n = Math.imul(n ^ c.codePointAt(0), 16777619); return n >>> 0; };
   // A short acceleration followed by a decisive, unbounced withdrawal.
   const departure = t => t < .2 ? .4 * (t / .2) ** 2 : 1 - .6 * ((1 - t) / .8) ** (16 / 3);
   function sample(value, elapsed, options = {}) {
-    const target = String(value ?? ''), glyphs = characters(target);
+    const target = String(value ?? '');
     const kind = options.kind || 'roll', duration = options.duration || (kind === 'mask' ? .72 : kind === 'decode' ? .82 : kind === 'type' ? .66 : .46);
     const age = Math.max(0, Number.isFinite(elapsed) ? elapsed : 0);
     const progress = options.reducedMotion ? 1 : clamp((age - (options.delay || 0)) / duration);
     const eased = departure(progress), settled = progress >= 1;
     let text = target;
-    if (!settled && kind === 'type') text = glyphs.slice(0, Math.floor(glyphs.length * progress)).join('');
+    if (!settled && kind === 'type') { const glyphs = characters(target); text = glyphs.slice(0, Math.floor(glyphs.length * progress)).join(''); }
     if (!settled && kind === 'decode') {
+      const glyphs = characters(target);
       const symbols = '0123456789/#<>+×[]', seed = hash(target), frame = Math.floor(age * 28);
       text = glyphs.map((c, i) => /^\s+$/u.test(c) || (i + .6) / Math.max(1, glyphs.length) <= progress ? c : symbols[((seed + Math.imul(frame + 1, 19 + i * 7)) >>> 0) % symbols.length]).join('');
     }
@@ -47,6 +60,10 @@
       return changed;
     }
     render(age, reducedMotion) {
+      // A settled view needs no sampling or style writes until a rewind,
+      // changed value, or motion preference actually makes it animate again.
+      if (this.settled && this.lastReduced === reducedMotion && age >= this.lastSampleAge) return;
+      this.lastSampleAge = age; this.lastReduced = reducedMotion;
       const state = sample(this.value, age, { ...this.options, reducedMotion });
       if (state.settled && this.settled) return;
       this.settled = state.settled;
