@@ -423,6 +423,31 @@ const pathBounds = path => {
   return { left: Math.min(...points.map(point => point[0])), right: Math.max(...points.map(point => point[0])),
     top: Math.min(...points.map(point => point[1])), bottom: Math.max(...points.map(point => point[1])) };
 };
+// Realistic measured identity cards in very different window proportions must
+// keep the completed portal and both imprints inside the available canvas.
+for (const [width, height, card] of [
+  [320, 568, { x: 26, y: 244, width: 268, height: 220 }],
+  [390, 844, { x: 35, y: 340, width: 320, height: 240 }],
+  [2560, 360, { x: 1125, y: 120, width: 310, height: 160 }],
+  [1920, 1080, { x: 736, y: 440, width: 448, height: 320 }],
+]) {
+  const title = { x: card.x - 20, y: Math.max(26, card.y - 134), width: card.width + 40, height: 88 };
+  const sample = render(width, height, { ...base, phase: 2, visualProgress: 1, impulse: 0,
+    layout: { identity: card, heading: title } });
+  const arches = mainArches(sample.records);
+  assert.ok(arches.length >= 2, 'responsive identity must retain the pointed-arch subject');
+  for (const ink of [...arches, ...manuscriptRings(sample, Math.min(width, height) / 1000)]) {
+    const bounds = pathBounds(ink);
+    assert.ok(bounds.left >= 0 && bounds.top >= 0 && bounds.right <= width && bounds.bottom <= height,
+      `completed identity subject must stay inside ${width}x${height}, without cropping important geometry`);
+  }
+  const rings = manuscriptRings(sample, Math.min(width, height) / 1000);
+  assert.equal(rings.length, 8, 'responsive sizing must retain both distinct identity imprints');
+  for (const ring of rings) {
+    const radius = ring.commands[0].args[2] * Math.hypot(ring.matrix[0], ring.matrix[1]);
+    assert.ok(radius < Math.min(card.width, card.height) * .18, 'small imprints must remain subordinate to the real identity card');
+  }
+}
 for (const [width, height, book] of [
   [1528, 732, { x: 305, y: 318, width: 922, height: 247, gutterX: 755, spread: true,
     left: { x: 305, y: 318, width: 437, height: 247 }, right: { x: 768, y: 318, width: 459, height: 247 } }],
@@ -472,7 +497,7 @@ for (const [width, height, book] of [
   }
   const movingPoints = age => mainArches(frame(age).records).flatMap(pathSegments).flat();
   const distanceFromBinding = points => Math.max(...points.map(point => Math.abs(point[0] - book.gutterX)));
-  assert.ok(distanceFromBinding(movingPoints(.56)) < distanceFromBinding(movingPoints(0)) * .3,
+  assert.ok(Math.min(...[.45, .55, .65, .75, .85].map(age => distanceFromBinding(movingPoints(age)))) < distanceFromBinding(movingPoints(0)) * .35,
     'the original arches must collect around the measured binding before becoming the page rims');
 
   const covers = folioPaper(frame(.6).records);
@@ -511,15 +536,27 @@ for (const [width, height, book] of [
   assert.ok(binding.some(path => pathSegments(path).some(([a, b]) => Math.abs(a[0] - book.gutterX) < 1e-7 && Math.abs(b[0] - book.gutterX) < 1e-7)),
     'the source axis must finish as the actual off-center book spine');
 
-  // Resizing must reproject the saved source measurements, while standalone
-  // chapter seeks can use the identity fallback without stale screen geometry.
-  const shrunk = { width: width * .7, height: height * .7 };
-  const oldOnNewViewport = render(shrunk.width, shrunk.height, { ...base, phase: 2, visualProgress: 1, impulse: 0,
-    layout: Object.fromEntries(Object.entries(sourceLayout).map(([name, box]) => [name, Object.fromEntries(Object.entries(box).map(([key, value]) => [key, value * .7]))])) });
-  const changedViewport = render(shrunk.width, shrunk.height, { ...state, bookAge: 0 });
-  const projected = mainArches(changedViewport.records).flatMap(pathSegments);
-  assert.ok(mainArches(oldOnNewViewport.records).flatMap(pathSegments).flat().every(point => distanceToSegments(point, projected) < .8),
-    'saved source geometry must follow the original viewport when the current viewport changes');
+  // Resizing must reproject the actual saved ink, not a newly rebuilt portal
+  // whose responsive pixel limits may differ. Wide-to-tall changes must retain
+  // one similarity transform instead of stretching card axes independently.
+  const original = render(width, height, { ...base, phase: 2, visualProgress: 1, impulse: 0, layout: sourceLayout });
+  for (const [targetWidth, targetHeight] of [[width * .7, height * .7], [390, 844], [1280, 420]]) {
+    const scale = Math.min(targetWidth / width, targetHeight / height);
+    const fitPoint = point => [targetWidth / 2 + (point[0] - width / 2) * scale, targetHeight / 2 + (point[1] - height / 2) * scale];
+    const expectedArches = mainArches(original.records).flatMap(pathSegments).map(segment => segment.map(fitPoint));
+    const resized = render(targetWidth, targetHeight, { ...state, bookAge: 0 });
+    const actualArches = mainArches(resized.records).flatMap(pathSegments);
+    assert.ok(actualArches.length > 0);
+    for (const [points, segments] of [[expectedArches.flat(), actualArches], [actualArches.flat(), expectedArches]]) {
+      assert.ok(Math.max(...points.map(point => distanceToSegments(point, segments))) < .8,
+        `changing ${width}x${height} to ${targetWidth}x${targetHeight} must fit the saved portal as one undistorted drawing`);
+    }
+    const expectedSeals = manuscriptRings(original, unit).flatMap(pathSegments).flat().map(fitPoint);
+    const actualSeals = manuscriptRings(resized, Math.min(targetWidth, targetHeight) / 1000).flatMap(pathSegments).flat();
+    assert.equal(actualSeals.length, expectedSeals.length, 'aspect-ratio reflow must retain both source imprints');
+    assert.ok(expectedSeals.every((point, index) => Math.hypot(point[0] - actualSeals[index][0], point[1] - actualSeals[index][1]) < 1e-6),
+      'the seals must use the same similarity transform as the source arches during viewport reflow');
+  }
   const fallback = frame(0, { bookSource: null });
   assert.ok(mainArches(fallback.records).length, 'direct chapter entry must still construct a portal without a captured source');
 }

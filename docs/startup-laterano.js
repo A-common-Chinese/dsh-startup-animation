@@ -50,11 +50,11 @@
     const textAge = reduced ? 10 : finite(state.textAge, resting ? 2 : progress * 2.4);
     let textOrder = 0;
 
-    function measured(value) {
+    function measured(value, viewWidth = width, viewHeight = height, viewUnit = unit) {
       if (!value || ![value.x, value.y, value.width, value.height].every(Number.isFinite) || value.width <= 0 || value.height <= 0) return null;
       return {
-        left: (value.x - width / 2) / unit, right: (value.x + value.width - width / 2) / unit,
-        top: (value.y - height / 2) / unit, bottom: (value.y + value.height - height / 2) / unit,
+        left: (value.x - viewWidth / 2) / viewUnit, right: (value.x + value.width - viewWidth / 2) / viewUnit,
+        top: (value.y - viewHeight / 2) / viewUnit, bottom: (value.y + value.height - viewHeight / 2) / viewUnit,
         rows: Array.isArray(value.rows) ? value.rows : [],
       };
     }
@@ -72,9 +72,12 @@
     function sourceMeasured(value) {
       const viewport = state.bookSource?.viewport;
       if (!value || !viewport || !(viewport.width > 0 && viewport.height > 0)) return measured(value);
-      const sx = width / viewport.width, sy = height / viewport.height;
-      return measured({ ...value, x: value.x * sx, y: value.y * sy,
-        width: value.width * sx, height: value.height * sy });
+      const scale = Math.min(width / viewport.width, height / viewport.height);
+      const project = box => ({ ...box,
+        x: width / 2 + (box.x - viewport.width / 2) * scale,
+        y: height / 2 + (box.y - viewport.height / 2) * scale,
+        width: box.width * scale, height: box.height * scale });
+      return measured({ ...project(value), rows: Array.isArray(value.rows) ? value.rows.map(project) : [] });
     }
     const sourceIdentity = sourceMeasured(state.bookSource?.layout?.identity);
     const sourceHeading = sourceMeasured(state.bookSource?.layout?.heading);
@@ -261,19 +264,73 @@
         if (q > 0) diamond(outer[0], outer[1], 3.5 * q, accent, .80, false);
       }
     }
-    function archPose(x, spring, half, base, inset, amount) {
-      const lock = smooth(section(amount, .03 + inset * .055, .58 + inset * .06));
-      return { x: x + (inset - 1) * 106 * (1 - lock), spring: spring + 108 * (1 - lock),
-        half: (half + inset * 14) * (1 + .22 * (1 - lock)), base: base + 52 * (1 - lock) };
+    function identityArchitecture(box, head, space = { width: W, height: H, unit }) {
+      const u = space.unit, x = (box.left + box.right) / 2, cardWidth = box.right - box.left;
+      const cardHeight = Math.max(1, box.bottom - box.top), safe = 12 / u;
+      const detail = clamp(Math.min(cardWidth, cardHeight * 2.2) / 600, .65, 1.18) * Math.min(1, 1.35 / u);
+      const capacity = Math.max(8, space.width / 2 - Math.abs(x) - safe);
+      const sideRoom = Math.max(0, capacity - cardWidth / 2);
+      const capitalRadius = Math.max(2 / u, Math.min(42 * detail, sideRoom * .42));
+      const insetStep = Math.min(14 * detail, Math.max(2 / u, sideRoom * .12));
+      const top = -space.height / 2 + safe;
+      const minSpring = box.top + Math.min(55 * detail, cardHeight * .20);
+      const maxSpring = Math.max(minSpring, box.bottom - 20 * detail);
+      const half = Math.max(8, Math.min(cardWidth / 2 + sideRoom * .20,
+        capacity - insetStep * 2, (maxSpring - top) / ROOT3 - insetStep * 2));
+      const columnOffset = Math.max(0, Math.min(capacity - capitalRadius, half + 35 * detail));
+      const spring = Math.min(maxSpring, Math.max(minSpring, top + ROOT3 * (half + insetStep * 2)));
+      const base = Math.min(box.bottom + 28 * detail, space.height / 2 - 18 / u);
+      const capitalY = Math.min(Math.max(box.top + cardHeight * .24, head.bottom + capitalRadius + 10 / u),
+        Math.max(top + capitalRadius, base - capitalRadius - 10 * detail));
+      const columnTop = Math.min(base, capitalY + capitalRadius + 8 * detail);
+      const crestRoom = Math.max(0, head.top - top - 8 / u);
+      const crestRadius = Math.min(65 * detail, crestRoom / 2.3);
+      const crestY = clamp(spring - ROOT3 * half + 55 * detail,
+        top + crestRadius * 1.1, Math.max(top + crestRadius * 1.1, head.top - crestRadius * 1.1 - 8 / u));
+      const seedRadius = Math.min(28 / u, Math.max(7 / u, Math.min(cardWidth, cardHeight) * .105));
+      const seedLimit = Math.max(0, space.width / 2 - seedRadius * 1.4 - 10 / u);
+      return { x, half, spring, base, capitalY, columnTop, columnOffset, capitalRadius,
+        crestRadius, crestY, insetStep, detailScale: detail, designUnit: 1, pixelUnit: 1 / u,
+        sway: Math.min(136 * detail, space.width * .10), lift: Math.min(130 * detail, cardHeight * .44),
+        seedRadius, seedLeft: clamp(x - columnOffset, -seedLimit, seedLimit),
+        seedRight: clamp(x + columnOffset, -seedLimit, seedLimit),
+        seedY: Math.min(box.bottom + seedRadius * 1.5 + 8 / u, space.height / 2 - seedRadius * 1.4 - 12 / u),
+        seedTravel: Math.min(space.width * .15, 150 * detail), seedRise: Math.min(cardHeight * .30, 80 * detail) };
     }
-    function identitySealAnchor(box, amount, index) {
-      const side = index ? 1 : -1, x = (box.left + box.right) / 2;
-      const half = Math.min(W * .39, (box.right - box.left) / 2 + 68);
+    function sourceArchitecture() {
+      const viewport = state.bookSource?.viewport, layout = state.bookSource?.layout;
+      if (viewport?.width > 0 && viewport?.height > 0 && layout?.identity) {
+        const oldUnit = Math.min(viewport.width, viewport.height) / 1000;
+        const box = measured(layout.identity, viewport.width, viewport.height, oldUnit);
+        const head = measured(layout.heading, viewport.width, viewport.height, oldUnit);
+        if (box && head) {
+          const original = identityArchitecture(box, head,
+            { width: viewport.width / oldUnit, height: viewport.height / oldUnit, unit: oldUnit });
+          const scale = Math.min(width / viewport.width, height / viewport.height) * oldUnit / unit;
+          return Object.fromEntries(Object.entries(original).map(([key, value]) => [key, value * scale]));
+        }
+      }
+      const box = sourceIdentity || { left: -W * .24, right: W * .24, top: atY(.43), bottom: atY(.72) };
+      return identityArchitecture(box, sourceHeading || { top: atY(.17), bottom: Math.min(box.top, atY(.44)) });
+    }
+    function archPose(architecture, inset, amount) {
+      const lock = smooth(section(amount, .03 + inset * .055, .58 + inset * .06));
+      const { x, spring, half, base, insetStep, sway, lift } = architecture;
+      return { x: x + (inset - 1) * sway * (1 - lock), spring: spring + lift * (1 - lock),
+        half: (half + inset * insetStep) * (1 + .15 * (1 - lock)), base: base + lift * .40 * (1 - lock) };
+    }
+    function identitySealAnchor(architecture, amount, index) {
+      const side = index ? 1 : -1;
       const arrival = smooth(section(amount, .41, .91));
-      const dockX = clamp(x + side * (half + 42), -W / 2 + 40, W / 2 - 40);
-      return { x: dockX + side * Math.min(W * .20, 180) * (1 - arrival),
-        y: box.bottom + 52 + 80 * (1 - arrival), radius: lerp(14, 26, arrival),
+      const dockX = index ? architecture.seedRight : architecture.seedLeft;
+      return { x: dockX + side * architecture.seedTravel * (1 - arrival),
+        y: architecture.seedY + architecture.seedRise * (1 - arrival), radius: architecture.seedRadius * lerp(.54, 1, arrival),
         turn: side * (1 - arrival) * Math.PI * .8, amount: arrival };
+    }
+    function architecturalCrest(x, y, radius, amount) {
+      if (radius <= 0) return;
+      ctx.save(); ctx.translate(x, y); ctx.scale(radius / 65, radius / 65);
+      interlace(0, 0, 65, amount, .80, Math.PI / 8); ctx.restore();
     }
     function iris(x, y, scale = 1, amount = 1, ink = color.ink, alpha = 1, angle = 0) {
       // An original iris cut from five ink plates. The pointed upright petal,
@@ -535,28 +592,38 @@
         marginArrival(3, 1, () => braid(-W * .31, atY(.797), W * .62, section(amount, .25, .96), .78));
       }
     }
-    function rowRegistration(box) {
-      if (!box) return;
-      const arrival = resting ? 1 : ease(section(progress, .32, .71));
+    function registrationShapes(box, amount, scale = { designUnit: 1, pixelUnit: 1 / unit }) {
+      const strokes = [], marks = [];
+      if (!box) return { strokes, marks };
+      const arrival = ease(section(amount, .32, .71));
+      const add = (start, end, ink, alpha, weight, side, role, ordinal = 0) =>
+        strokes.push({ start, end, ink, alpha, weight, side, role, ordinal });
       for (const side of [-1, 1]) {
         const edge = side < 0 ? box.left : box.right;
-        const x = edge + side * 130 * (1 - arrival);
-        const arm = Math.min(20 / unit, (box.right - box.left) * .10);
-        const rise = Math.min(15 / unit, (box.bottom - box.top) * .14);
+        const x = edge + side * 130 * scale.designUnit * (1 - arrival);
+        const arm = Math.min(20 * scale.pixelUnit, (box.right - box.left) * .10);
+        const rise = Math.min(15 * scale.pixelUnit, (box.bottom - box.top) * .14);
         for (const [y, direction] of [[box.top, 1], [box.bottom, -1]]) {
-          line(x, y, x - side * arm, y, accent, .95, 2 / unit);
-          line(x, y, x, y + direction * rise, accent, .95, 2 / unit);
+          add([x, y], [x - side * arm, y], accent, .95, 2 * scale.pixelUnit, side, 'corner-horizontal', direction);
+          add([x, y], [x, y + direction * rise], accent, .95, 2 * scale.pixelUnit, side, 'corner-vertical', direction);
         }
-        box.rows.forEach(row => {
+        (box.rows || []).forEach((row, index) => {
           if (![row.y, row.height].every(Number.isFinite) || row.height <= 0) return;
           const y = (row.y + row.height / 2 - height / 2) / unit;
-          line(x, y, x + side * 9, y, accent, .7, 1);
+          add([x, y], [x + side * 9 * scale.designUnit, y], accent, .7, scale.designUnit, side, 'row', index);
         });
         const center = (box.top + box.bottom) / 2;
-        diamond(x + side * 28, center, 4, accent, .8, false);
-        line(x + side * 28, center - 22, x + side * 28, center - 8, color.line, .8, 1);
-        line(x + side * 28, center + 8, x + side * 28, center + 22, color.line, .8, 1);
+        const xx = x + side * 28 * scale.designUnit;
+        marks.push({ x: xx, y: center, radius: 4 * scale.designUnit, side });
+        add([xx, center - 22 * scale.designUnit], [xx, center - 8 * scale.designUnit], color.line, .8, scale.designUnit, side, 'clasp', -1);
+        add([xx, center + 8 * scale.designUnit], [xx, center + 22 * scale.designUnit], color.line, .8, scale.designUnit, side, 'clasp', 1);
       }
+      return { strokes, marks };
+    }
+    function rowRegistration(box) {
+      const shapes = registrationShapes(box, progress);
+      shapes.strokes.forEach(stroke => line(...stroke.start, ...stroke.end, stroke.ink, stroke.alpha, stroke.weight));
+      shapes.marks.forEach(mark => diamond(mark.x, mark.y, mark.radius, accent, .8, false));
     }
 
 
@@ -632,8 +699,8 @@
     }
     function identityScene() {
       const box = identityBox || { left: -W * .24, right: W * .24, top: atY(.43), bottom: atY(.72), rows: [] };
-      const x = (box.left + box.right) / 2, half = Math.min(W * .39, (box.right - box.left) / 2 + 68);
-      const spring = box.top + 55, base = box.bottom + 28;
+      const architecture = identityArchitecture(box, headingBox);
+      const { x, half, spring, base, capitalY, columnTop, columnOffset, capitalRadius } = architecture;
       outside([box], () => {
         floralMargins(2);
         page('III', .055);
@@ -645,25 +712,24 @@
         line(x - half * 1.5, spring, x + half * 1.5, spring, color.line, construction * .36, .8);
         line(x, spring - ROOT3 * half - 32, x, base + 12, color.line, construction * .36, .8);
         for (let inset = 0; inset < 3; inset++) {
-          const pose = archPose(x, spring, half, base, inset, progress);
+          const pose = archPose(architecture, inset, progress);
           pointedArch(pose.x, pose.spring, pose.half, pose.base, section(progress, .19 + inset * .04, .70 + inset * .035),
             inset === 1 ? .88 : .45, inset === 1 ? 2.3 : .8, inset === 1 ? accent : color.line);
         }
         const locked = smooth(section(progress, .57, .81));
-        const capitalY = Math.max(spring - 8, headingBox.bottom + 67);
-        const columnTop = Math.max(spring, capitalY + 50);
         for (const side of [-1, 1]) {
-          const column = x + side * (half + 42);
+          const column = x + side * columnOffset;
           rect(column - 4, columnTop, 8, Math.max(0, base - columnTop) * locked, color.ink, .94);
           line(column - 12, base, column + 12, base, color.ink, locked, 2);
           if (wide) type(side < 0 ? 'IDENTITY' : 'CLEARANCE', column + side * 35, (box.top + box.bottom) / 2,
             10, color.soft, locked, 2, side < 0 ? 'right' : 'left');
-          radiantSeal(column, capitalY, 45, section(progress, .18, .90), .88);
-          const seed = identitySealAnchor(box, progress, side > 0 ? 1 : 0);
+          ctx.save(); ctx.translate(column, capitalY); ctx.scale(capitalRadius / 45, capitalRadius / 45);
+          radiantSeal(0, 0, 45, section(progress, .18, .90), .88); ctx.restore();
+          const seed = identitySealAnchor(architecture, progress, side > 0 ? 1 : 0);
           ctx.save(); ctx.translate(seed.x, seed.y); ctx.rotate(seed.turn);
           manuscriptSeal(0, 0, seed.radius, side > 0 ? 1 : 0, seed.amount); ctx.restore();
         }
-        interlace(x, spring - ROOT3 * half + 55, 65, section(progress, .08, .84), .80, Math.PI / 8);
+        architecturalCrest(x, architecture.crestY, architecture.crestRadius, section(progress, .08, .84));
       });
       rowRegistration(identityBox);
     }
@@ -729,21 +795,29 @@
       // binding, then become the rims, endbands and cover of this very book.
       // No retained bitmap, crossfade or opacity replacement owns this handoff.
       const source = sourceIdentity || { left: -W * .24, right: W * .24, top: atY(.43), bottom: atY(.72) };
-      const head = sourceHeading || { bottom: Math.min(source.top, atY(.44)) };
-      const x = (source.left + source.right) / 2;
-      const half = Math.min(W * .39, (source.right - source.left) / 2 + 68);
-      const spring = source.top + 55, base = source.bottom + 28;
-      const capitalY = Math.max(spring - 8, head.bottom + 67), columnTop = Math.max(spring, capitalY + 50);
-      const gather = smooth(section(bookAge, 0, .68));
-      const spread = smooth(section(bookAge, .56, 1.65));
+      const architecture = sourceArchitecture();
+      const { x, half, spring, base, capitalY, columnTop, columnOffset, capitalRadius } = architecture;
+      const gather = smooth(section(bookAge, 0, .78));
+      const spread = smooth(section(bookAge, .62, 1.75));
       const srcProgress = clamp(finite(state.bookSource?.progress, 1));
       const sourceConstruction = smooth(section(srcProgress, 0, .27));
       const sourceLocked = smooth(section(srcProgress, .57, .81));
       const sourceCapital = section(srcProgress, .18, .90);
-      const phasePoint = (sourcePoint, bindingPoint, pagePoint) => [
-        lerp(lerp(sourcePoint[0], bindingPoint[0], gather), pagePoint[0], spread),
-        lerp(lerp(sourcePoint[1], bindingPoint[1], gather), pagePoint[1], spread),
-      ];
+      const phasePoint = (sourcePoint, bindingPoint, pagePoint, delay = 0) => {
+        const fold = delay ? smooth(section(bookAge, delay, .78 + delay)) : gather;
+        const unfold = delay ? smooth(section(bookAge, .62 + delay, 1.75 + delay)) : spread;
+        const xx = lerp(lerp(sourcePoint[0], bindingPoint[0], fold), pagePoint[0], unfold);
+        const yy = lerp(lerp(sourcePoint[1], bindingPoint[1], fold), pagePoint[1], unfold);
+        const swing = fold > 0 && fold < 1 ? Math.sin(fold * Math.PI) * (1 - unfold) : 0;
+        const side = Math.sign(sourcePoint[0] - x) || Math.sign(pagePoint[0] - folio.center);
+        // A bounded outward arc keeps the collecting gate legible before it
+        // closes onto the spine. Both endpoints remain the exact source/leaf.
+        const reach = Math.min(146 * architecture.detailScale, W * .065,
+          Math.max(0, W / 2 - 10 / unit - side * xx));
+        const rise = Math.min(96 * architecture.detailScale, H * .075,
+          Math.max(0, yy + H / 2 - 10 / unit));
+        return [xx + side * reach * swing, yy - rise * swing];
+      };
       const movingHole = box => {
         if (!box || gather >= .999) return null;
         const cx = lerp((box.left + box.right) / 2, folio.center, gather);
@@ -753,15 +827,16 @@
       };
       outside([movingHole(sourceIdentity)], () => {
         for (let inset = 0; inset < 3; inset++) {
-          const pose = archPose(x, spring, half, base, inset, srcProgress), radius = pose.half;
+          const pose = archPose(architecture, inset, srcProgress), radius = pose.half;
           const sourceAmount = smooth(section(srcProgress, .19 + inset * .04, .70 + inset * .035));
           const curve = Math.min(1, sourceAmount * 1.5), legs = smooth(section(sourceAmount, .43, 1));
           for (let index = 0; index < 2; index++) {
             const side = index ? 1 : -1, leaf = folio.leaves[index], points = [];
+            const lag = inset * .035 + index * .02;
             const bindingPoint = t => [folio.center + side * (4 + inset * 3), lerp(folio.bottom + 12, folio.top + 10, t)];
             const legPoints = [
-              phasePoint([pose.x + side * radius, lerp(pose.spring, pose.base, legs)], bindingPoint(0), pageRim(folio, leaf, side, 0, 3 + inset * 4)),
-              phasePoint([pose.x + side * radius, pose.spring], bindingPoint(.22), pageRim(folio, leaf, side, .22, 3 + inset * 4)),
+              phasePoint([pose.x + side * radius, lerp(pose.spring, pose.base, legs)], bindingPoint(0), pageRim(folio, leaf, side, 0, 3 + inset * 4), lag),
+              phasePoint([pose.x + side * radius, pose.spring], bindingPoint(.22), pageRim(folio, leaf, side, .22, 3 + inset * 4), lag),
             ];
             trace(legPoints, 1, inset === 1 ? accent : color.line, inset === 1 ? .88 : .45, inset === 1 ? 2.3 : .8);
             // Fixed cardinality makes the entire arc-to-paper transformation
@@ -772,7 +847,7 @@
               // preserving that opposite direction matters for early skips.
               const a = (index ? 1 - curve + curve * q : q * curve) * Math.PI / 3;
               const start = [pose.x + side * (2 * radius * Math.cos(a) - radius), pose.spring - Math.sin(a) * radius * 2];
-              points.push(phasePoint(start, bindingPoint(t), pageRim(folio, leaf, side, t, 3 + inset * 4)));
+              points.push(phasePoint(start, bindingPoint(t), pageRim(folio, leaf, side, t, 3 + inset * 4), lag));
             }
             trace(points, 1, inset === 1 ? accent : color.line, inset === 1 ? .88 : .45, inset === 1 ? 2.3 : .8);
           }
@@ -788,10 +863,14 @@
             points.push(phasePoint(sourcePoint, target, target));
           }
           trace(points, 1, color.line, .30, .8);
+          const sourceDot = [x + side * half, spring], targetDot = [folio.center + side * 8, folio.top + 17];
+          const point = phasePoint(sourceDot, targetDot, targetDot);
+          dot(point[0], point[1], lerp(3 * architecture.designUnit, 2.1, gather), accent,
+            lerp(sourceConstruction, 1, gather));
         }
         const sourceLines = [
           [[x - half * 1.5, spring], [x + half * 1.5, spring]],
-          [[x, spring - ROOT3 * half - 32], [x, base + 12]],
+          [[x, spring - ROOT3 * half - 32 * architecture.designUnit], [x, base + 12 * architecture.designUnit]],
         ];
         sourceLines.forEach((points, index) => {
           const target = index ? [[folio.center, folio.top - 5], [folio.center, folio.bottom + 23]] :
@@ -801,20 +880,27 @@
             index ? lerp(.36 * sourceConstruction, .88, gather) : lerp(.36 * sourceConstruction, .36, gather), index ? 1.2 : .8);
         });
         for (let index = 0; index < 2; index++) {
-          const side = index ? 1 : -1, column = x + side * (half + 42), leaf = folio.leaves[index];
+          const side = index ? 1 : -1, column = x + side * columnOffset, leaf = folio.leaves[index];
           const edge = index ? leaf.right : leaf.left;
           const columnBottom = lerp(columnTop, Math.max(columnTop, base), sourceLocked);
-          const startCorners = [[column - 4, columnTop], [column + 4, columnTop], [column + 4, columnBottom], [column - 4, columnBottom]];
+          const columnHalfWidth = 4 * architecture.designUnit;
+          const startCorners = [[column - columnHalfWidth, columnTop], [column + columnHalfWidth, columnTop],
+            [column + columnHalfWidth, columnBottom], [column - columnHalfWidth, columnBottom]];
           const bindCorners = [[folio.center + side * 11 - 3, folio.top + 7], [folio.center + side * 11 + 3, folio.top + 7],
             [folio.center + side * 11 + 3, folio.bottom + 18], [folio.center + side * 11 - 3, folio.bottom + 18]];
           const coverCorners = [[edge + side * 7, leaf.top + 9], [edge + side * 13, leaf.top + 9],
             [edge + side * 13, leaf.bottom - 5], [edge + side * 7, leaf.bottom - 5]];
           polygon(startCorners.map((point, i) => phasePoint(point, bindCorners[i], coverCorners[i])), color.ink, .94);
+          const baseStart = phasePoint([column - 12 * architecture.designUnit, base],
+            [folio.center - 8, folio.bottom + 17], [edge - side * 4, leaf.bottom + 13]);
+          const baseEnd = phasePoint([column + 12 * architecture.designUnit, base],
+            [folio.center + 8, folio.bottom + 17], [edge + side * 14, leaf.bottom + 13]);
+          line(...baseStart, ...baseEnd, color.ink, lerp(sourceLocked, 1, gather), 2);
           // Cardinal plates from the capitals become the endband stitches;
           // the remaining rays fan into small fore-edge engraved clasps.
           for (let ray = 0; ray < 24; ray++) {
-            const a = ray * TAU / 24 - Math.PI / 2, inner = 45 * .46, outer = 45 * (ray % 3 ? .79 : 1);
-            const broad = ray % 3 ? 2 : 5.2;
+            const a = ray * TAU / 24 - Math.PI / 2, inner = capitalRadius * .46, outer = capitalRadius * (ray % 3 ? .79 : 1);
+            const broad = (ray % 3 ? 2 : 5.2) * capitalRadius / 45;
             const arrival = smooth(section(sourceCapital, .08 + ray % 6 * .024, .48 + ray % 6 * .032));
             const local = [[inner, -broad], [lerp(inner, outer, arrival), 0], [inner, broad], [inner * .9, 0]];
             const sourcePoints = local.map(([xx, yy]) => [column + xx * Math.cos(a) - yy * Math.sin(a), capitalY + xx * Math.sin(a) + yy * Math.cos(a)]);
@@ -829,16 +915,58 @@
           const p = phasePoint([column, capitalY], [folio.center, index ? folio.bottom + 21 : folio.top - 7],
             [folio.center, index ? folio.bottom + 21 : folio.top - 7]);
           const centreInk = lerp(smooth(section(sourceCapital, .12, .66)), 1, gather);
-          diamond(p[0], p[1], lerp(45 * .29, 6, gather), accent, .88 * centreInk, false);
-          diamond(p[0], p[1], lerp(45 * .12, 2.5, gather), color.ink, .88 * centreInk);
+          diamond(p[0], p[1], lerp(capitalRadius * .29, 6, gather), accent, .88 * centreInk, false);
+          diamond(p[0], p[1], lerp(capitalRadius * .12, 2.5, gather), color.ink, .88 * centreInk);
+          for (const arm of [-1, 1]) {
+            const origins = [
+              [[column + arm * capitalRadius * .15, capitalY], [column + arm * capitalRadius * .39, capitalY]],
+              [[column, capitalY + arm * capitalRadius * .15], [column, capitalY + arm * capitalRadius * .39]],
+            ];
+            origins.forEach((ends, axis) => {
+              const knotY = (index ? folio.bottom + 16 : folio.top + 2) + arm * (axis ? 4 : 0);
+              const target = [[folio.center + side * 10, knotY], [folio.center + side * (axis ? 10 : 18), knotY + (axis ? arm * 7 : 0)]];
+              const start = phasePoint(ends[0], target[0], target[0]);
+              const end = phasePoint(ends[1], target[1], target[1]);
+              line(...start, ...end, accent, .88 * centreInk, lerp(1.3 * capitalRadius / 45, 1.1, gather));
+            });
+          }
         }
         const dockRadius = wide ? 14 : 12;
         // The interlace plates extend beyond its circular radius. Dock their
         // full silhouette below the caption, at the mouth of the binding.
-        const dockY = Math.max(folio.top - 14, headingBox.bottom + dockRadius * .78 + 17 + 6 / unit);
-        const crestX = lerp(x, folio.center, gather), crestY = lerp(spring - ROOT3 * half + 55, dockY, gather);
-        interlace(crestX, crestY, lerp(65, dockRadius, gather), lerp(section(srcProgress, .08, .84), 1, gather), .80, Math.PI / 8);
+        const dockY = Math.max(folio.top - 14, headingBox.bottom + dockRadius * 1.1 + 6 / unit);
+        const crestX = lerp(x, folio.center, gather), crestY = lerp(architecture.crestY, dockY, gather);
+        architecturalCrest(crestX, crestY, lerp(architecture.crestRadius, dockRadius, gather), lerp(section(srcProgress, .08, .84), 1, gather));
       }, 0);
+      // The identity card's corner brackets and real row ticks are material
+      // too: fold them into page corners and sewn gutter marks, never discard
+      // one overlay and fade in an unrelated book frame.
+      const registration = registrationShapes(sourceIdentity, srcProgress, architecture);
+      const rowCount = Math.max(1, sourceIdentity?.rows?.length || 0);
+      registration.strokes.forEach(stroke => {
+        const leaf = folio.leaves[stroke.side > 0 ? 1 : 0], edge = stroke.side > 0 ? leaf.right : leaf.left;
+        let target;
+        if (stroke.role.startsWith('corner')) {
+          const yy = stroke.ordinal > 0 ? leaf.top - 8 : leaf.bottom + 10, xx = edge + stroke.side * 8;
+          target = stroke.role === 'corner-horizontal' ? [[xx, yy], [xx - stroke.side * 18, yy]] :
+            [[xx, yy], [xx, yy + stroke.ordinal * 17]];
+        } else if (stroke.role === 'row') {
+          const yy = lerp(folio.top + 35, folio.bottom - 26, (stroke.ordinal + .5) / rowCount);
+          target = [[folio.center + stroke.side * 2, yy], [folio.center + stroke.side * 7, yy + 3]];
+        } else {
+          const yy = (leaf.top + leaf.bottom) / 2;
+          target = [[edge + stroke.side * 8, yy + stroke.ordinal * 21], [edge + stroke.side * 8, yy + stroke.ordinal * 8]];
+        }
+        const bind = [[folio.center + stroke.side * 6, target[0][1]], [folio.center + stroke.side * 8, target[1][1]]];
+        const start = phasePoint(stroke.start, bind[0], target[0]), end = phasePoint(stroke.end, bind[1], target[1]);
+        line(...start, ...end, stroke.ink, stroke.alpha, lerp(stroke.weight, Math.min(stroke.weight, 1.2 / unit), spread));
+      });
+      registration.marks.forEach(mark => {
+        const leaf = folio.leaves[mark.side > 0 ? 1 : 0], edge = mark.side > 0 ? leaf.right : leaf.left;
+        const target = [edge + mark.side * 8, (leaf.top + leaf.bottom) / 2];
+        const point = phasePoint([mark.x, mark.y], [folio.center + mark.side * 8, target[1]], target);
+        diamond(point[0], point[1], lerp(mark.radius, 4, spread), accent, .8, false);
+      });
     }
     function paperContour(folio, leaf, side, open, offset = 0, cover = false) {
       const center = folio.center, edge = (side < 0 ? leaf.left : leaf.right) + side * offset;
@@ -885,11 +1013,11 @@
       const bottom = Math.min(writing.footer - 10 / unit, leaf.bottom - 30 / unit);
       const left = Math.max(leaf.left + 25 / unit, writing.list.left);
       const right = Math.min(leaf.right - 25 / unit, writing.list.right);
-      const radius = Math.min(78 / unit, (right - left) * .34, (bottom - top) / 2.22);
+      const radius = Math.min(64 / unit, (right - left) * .30, (bottom - top) / 2.22);
       if (radius * unit < 23) return null;
       return { x: (left + right) / 2, y: (top + bottom - radius * .17) / 2, radius };
     }
-    function manuscriptSeal(x, y, radius, index, amount) {
+    function manuscriptSeal(x, y, radius, index, amount, detailPixels = radius * unit) {
       if (amount <= 0) return;
       const ring = smooth(section(amount, 0, .40));
       const figure = smooth(section(amount, .16, .76));
@@ -953,7 +1081,7 @@
       }
       // Four ink-cut pinnacles make the theological structure readable at a
       // normal window size. Tiny fore-edge clasps keep their simple circlet.
-      const facets = lock * smooth(section(radius * unit, 14, 27));
+      const facets = lock * smooth(section(detailPixels, 14, 27));
       if (facets > 0) {
         for (let pinnacle = 0; pinnacle < 4; pinnacle++) {
           const a = pinnacle * TAU / 4 - Math.PI / 2;
@@ -1040,13 +1168,14 @@
     function folioSealMigration(folio) {
       const source = sourceIdentity || { left: -W * .24, right: W * .24, top: atY(.43), bottom: atY(.72) };
       const sourceProgress = clamp(finite(state.bookSource?.progress, 1));
+      const architecture = sourceArchitecture();
       const writing = folio.leaves.map(pageWriting);
       // Establish the screen-space text exclusions before any local seal
       // rotation. Transforming the holes with a flying mark would expose text.
       outside(writing.flatMap(page => [page.heading, page.occupied]), () => {
         folio.leaves.forEach((leaf, index) => {
           const side = index ? 1 : -1, edge = index ? leaf.right : leaf.left;
-          const seed = identitySealAnchor(source, sourceProgress, index);
+          const seed = identitySealAnchor(architecture, sourceProgress, index);
           const available = Math.max(0, W / 2 - Math.abs(edge));
           const margin = Math.min(24 / unit, available * .54);
           const outerX = edge + side * margin;
@@ -1073,7 +1202,8 @@
           const turn = lerp(seed.turn, 0, settle) + side * Math.sin(gather * Math.PI) * (1 - settle) * Math.PI * .95;
           const amount = lerp(seed.amount, 1, smooth(section(bookAge, 0, .58)));
           ctx.save(); ctx.translate(xx, yy); ctx.rotate(turn);
-          manuscriptSeal(0, 0, lerp(seed.radius, target.radius, enlarge), index, amount);
+          manuscriptSeal(0, 0, lerp(seed.radius, target.radius, enlarge), index, amount,
+            lerp(seed.radius / architecture.pixelUnit, target.radius * unit, enlarge));
           ctx.restore();
         });
       }, 6 / unit);

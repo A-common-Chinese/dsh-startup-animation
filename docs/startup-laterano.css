@@ -3,7 +3,7 @@
 .visual-style-setting label{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .visual-style-setting select{max-width:220px;padding:9px;color:var(--ink);background:var(--bg);border:1px solid var(--line)}
 .visual-style-setting p{margin:0;color:var(--soft);font-size:10px;line-height:1.6}
-:root[data-visual-style=laterano]{--ink:#101b2e;--soft:#596f96;--accent:#2362d5;--line:#b4c6e1;--panel:#f8fafdf7;--bg:#f1f5fb}
+:root[data-visual-style=laterano]{--ink:#101b2e;--soft:#596f96;--accent:#2362d5;--line:#b4c6e1;--panel:#f8fafdf7;--bg:#f1f5fb;--stage-unit:clamp(.75px,.111111vmin,1.6px)}
 :root[data-visual-style=laterano][data-theme=dark]{--ink:#eef4ff;--soft:#a0b4d6;--accent:#8bb8ff;--line:#3b5278;--panel:#101c32f7;--bg:#0e182a}
 :root[data-visual-style=laterano] body.on-black{--ink:#101b2e;--soft:#596f96;--accent:#2362d5;--line:#b4c6e1;--panel:#f8fafdf7}
 :root[data-visual-style=laterano][data-theme=dark] body.on-black{--ink:#eef4ff;--soft:#a0b4d6;--accent:#8bb8ff;--line:#3b5278;--panel:#101c32f7}
@@ -28,35 +28,55 @@
 [data-visual-style=laterano] .control-panel{box-shadow:12px 12px 0 #2362d511;border-color:var(--accent)}
 @media(max-width:600px){[data-visual-style=laterano] h1{letter-spacing:.12em;text-indent:.12em}[data-visual-style=laterano] .phase-kicker{letter-spacing:.15em}}
 
+/* One responsive type/spacing scale, with a readable small-window floor.
+   Actual CSS-pixel bounds remain the authority for the canvas architecture. */
+[data-visual-style=laterano] .stage-heading{width:100%;min-width:0}
+[data-visual-style=laterano] h1{font-size:clamp(24px,calc(45 * var(--stage-unit)),72px);margin:calc(15 * var(--stage-unit)) 0 calc(13 * var(--stage-unit))}
+[data-visual-style=laterano] .phase-kicker{font-size:max(8px,calc(10 * var(--stage-unit)));min-height:1.4em}
+[data-visual-style=laterano] .phase-note{font-size:max(10px,calc(11 * var(--stage-unit)));max-width:calc(620 * var(--stage-unit))}
+[data-visual-style=laterano] .identity-phase .stage-copy{top:50%;width:calc(760 * var(--stage-unit));max-width:calc(100% - 48px);display:flex;flex-direction:column;align-items:center}
+[data-visual-style=laterano] .identity-phase .identity-card{position:relative;top:auto;left:auto;transform:none;margin-top:calc(22 * var(--stage-unit));width:min(100%,calc(440 * var(--stage-unit)));max-width:100%;padding:calc(11 * var(--stage-unit)) calc(24 * var(--stage-unit)) calc(12 * var(--stage-unit))}
+[data-visual-style=laterano] .identity-card .identity-row{grid-template-columns:minmax(96px,.95fr) minmax(0,1.4fr);gap:calc(12 * var(--stage-unit));min-height:calc(49 * var(--stage-unit));padding:calc(8 * var(--stage-unit)) 0}
+[data-visual-style=laterano] .identity-card .identity-label{font-size:max(11px,calc(12 * var(--stage-unit)));grid-template-columns:calc(17 * var(--stage-unit)) 1fr;gap:calc(6 * var(--stage-unit))}
+[data-visual-style=laterano] .identity-card .identity-value{font-size:max(11px,calc(13 * var(--stage-unit)))}
+[data-visual-style=laterano] .identity-card .access-entry input,[data-visual-style=laterano] .identity-card .access-state{height:max(30px,calc(35 * var(--stage-unit)));min-height:max(30px,calc(35 * var(--stage-unit)))}
+[data-visual-style=laterano] .identity-card .access-state{display:flex;align-items:center;justify-content:flex-end;font-size:max(8px,calc(9 * var(--stage-unit)))}
+[data-visual-style=laterano] .access-entry input{font-size:max(12px,calc(13 * var(--stage-unit)))}
+[data-visual-style=laterano] .access-entry button{width:max(32px,calc(35 * var(--stage-unit)));min-height:max(30px,calc(35 * var(--stage-unit)));font-size:calc(18 * var(--stage-unit))}
+[data-visual-style=laterano] .identity-card .access-feedback{font-size:max(10px,calc(10 * var(--stage-unit)));min-height:1.6em;margin:calc(3 * var(--stage-unit)) 0 calc(8 * var(--stage-unit))}
+[data-visual-style=laterano] .identity-card .identity-source{padding-top:calc(9 * var(--stage-unit));font-size:max(7px,calc(8 * var(--stage-unit)))}
+[data-visual-style=laterano] .identity-source .identity-value{font-size:inherit}
+
 /* A measured, flat folio: reveal the real text outward from the shared spine.
    Clipping leaves DOM bounds fixed, so the canvas and pages never drift. */
-[data-visual-style=laterano] .inventory-phase .stage-copy{top:23%;max-width:78%}
-[data-visual-style=laterano] .inventory-panel{top:35%;bottom:14%;left:16%;right:16%;gap:10px;--book-open:1}
-[data-visual-style=laterano] .inventory-columns{gap:0;position:relative;margin-bottom:4.7vmin}
-[data-visual-style=laterano] .inventory-column{position:relative;border:0;padding:34px 40px 32px}
+[data-visual-style=laterano] .inventory-phase .stage-copy{top:21%;width:calc(1000 * var(--stage-unit));max-width:88%}
+[data-visual-style=laterano] .inventory-panel{top:var(--folio-top,35%);bottom:12%;left:50%;right:auto;transform:translateX(-50%);width:min(calc(1120 * var(--stage-unit)),calc(100% - max(40px,12vmin)));gap:calc(10 * var(--stage-unit));--book-open:1;--page-inset:clamp(12px,3.3vw,calc(40 * var(--stage-unit)))}
+[data-visual-style=laterano] .inventory-columns{gap:0;position:relative;margin-bottom:calc(34 * var(--stage-unit))}
+[data-visual-style=laterano] .inventory-column{position:relative;border:0;padding:calc(34 * var(--stage-unit)) var(--page-inset) calc(32 * var(--stage-unit))}
 [data-visual-style=laterano] .inventory-column[data-page=left]{clip-path:inset(0 0 0 calc((1 - var(--book-open))*100%))}
 [data-visual-style=laterano] .inventory-column[data-page=right]{clip-path:inset(0 calc((1 - var(--book-open))*100%) 0 0)}
-[data-visual-style=laterano] .inventory-column:after{position:absolute;left:40px;right:40px;bottom:12px;color:var(--soft);font:9px Georgia,serif;letter-spacing:.2em;pointer-events:none}
+[data-visual-style=laterano] .inventory-column:after{position:absolute;left:var(--page-inset);right:var(--page-inset);bottom:calc(12 * var(--stage-unit));color:var(--soft);font:max(7px,calc(9 * var(--stage-unit))) Georgia,serif;letter-spacing:.2em;pointer-events:none}
 [data-visual-style=laterano] .inventory-column[data-page=left]:after{content:"I  /  SKILLS"}
 [data-visual-style=laterano] .inventory-column[data-page=right]:after{content:"PLUGINS  /  II";text-align:right}
-[data-visual-style=laterano] .inventory-heading{border-bottom:1px solid var(--line);padding-bottom:12px;margin-bottom:15px;flex-wrap:wrap;gap:6px 10px}
-[data-visual-style=laterano] .inventory-heading b{font-size:23px;letter-spacing:.12em}
-[data-visual-style=laterano] .inventory-heading strong{font:28px Georgia,serif}
-[data-visual-style=laterano] .inventory-heading span{order:2;width:100%;font-size:10px}
+[data-visual-style=laterano] .inventory-heading{border-bottom:1px solid var(--line);padding-bottom:calc(12 * var(--stage-unit));margin-bottom:calc(15 * var(--stage-unit));flex-wrap:wrap;gap:calc(6 * var(--stage-unit)) calc(10 * var(--stage-unit))}
+[data-visual-style=laterano] .inventory-heading b{font-size:max(16px,calc(23 * var(--stage-unit)));letter-spacing:.12em}
+[data-visual-style=laterano] .inventory-heading strong{font: max(21px,calc(28 * var(--stage-unit))) Georgia,serif}
+[data-visual-style=laterano] .inventory-heading span{order:2;width:100%;font-size:max(9px,calc(10 * var(--stage-unit)))}
 [data-visual-style=laterano] .inventory-panel>.inventory-message,[data-visual-style=laterano] .inventory-panel>.inventory-issues{opacity:var(--book-open);padding-inline:4px}
 [data-visual-style=laterano] .inventory-source{padding-left:0}
 [data-visual-style=laterano] .inventory-list{padding-right:5px}
-@media(min-width:1600px){[data-visual-style=laterano] .inventory-panel{left:20%;right:20%}}
-@media(max-width:900px){[data-visual-style=laterano] .inventory-panel{left:10%;right:10%}[data-visual-style=laterano] .inventory-column{padding-inline:25px}[data-visual-style=laterano] .inventory-column:after{left:25px;right:25px}}
+[data-visual-style=laterano] .inventory-name{font-size:max(11px,calc(13 * var(--stage-unit)));line-height:1.6}
+[data-visual-style=laterano] .inventory-source{font-size:max(9px,calc(10 * var(--stage-unit)));line-height:1.5}
+[data-visual-style=laterano] .inventory-row{padding-bottom:calc(9 * var(--stage-unit))}
 @media(max-width:600px){
- [data-visual-style=laterano] .inventory-phase .stage-copy{top:25%;max-width:89%}
- [data-visual-style=laterano] .inventory-panel{left:7%;right:7%;top:38%;bottom:16%;gap:8px}
- [data-visual-style=laterano] .inventory-column{padding:25px 12px 28px}
- [data-visual-style=laterano] .inventory-column:after{left:12px;right:12px;font-size:7px;letter-spacing:.12em}
- [data-visual-style=laterano] .inventory-heading{padding-bottom:9px;margin-bottom:11px}
+ [data-visual-style=laterano] .identity-phase .stage-copy{max-width:calc(100% - 36px)}
+ [data-visual-style=laterano] .identity-phase .identity-card{padding-inline:14px}
+ [data-visual-style=laterano] .identity-card .identity-row{grid-template-columns:minmax(92px,1fr) minmax(0,1.4fr);gap:8px}
+ [data-visual-style=laterano] .inventory-phase .stage-copy{top:22%;max-width:89%}
+ [data-visual-style=laterano] .inventory-panel{bottom:14%;width:calc(100% - 40px);gap:8px}
+ [data-visual-style=laterano] .inventory-column:after{letter-spacing:.12em}
  [data-visual-style=laterano] .inventory-heading b{font-size:16px;letter-spacing:.05em}
  [data-visual-style=laterano] .inventory-heading strong{font-size:21px}
- [data-visual-style=laterano] .inventory-heading span{font-size:9px}
 }
-@media(max-height:520px){[data-visual-style=laterano] .inventory-phase .stage-copy{top:22%}[data-visual-style=laterano] .inventory-panel{top:34%;bottom:8%;gap:8px}[data-visual-style=laterano] .inventory-column{padding-top:18px;padding-bottom:22px}[data-visual-style=laterano] .inventory-heading{margin-bottom:7px;padding-bottom:6px}[data-visual-style=laterano] .inventory-heading span{display:none}}
+@media(max-height:520px){[data-visual-style=laterano] h1{font-size:26px;margin:8px 0}[data-visual-style=laterano] .identity-phase .identity-card{margin-top:10px;padding-block:5px}[data-visual-style=laterano] .identity-card .identity-row{padding-block:4px;min-height:32px}[data-visual-style=laterano] .inventory-phase .stage-copy{top:21%}[data-visual-style=laterano] .inventory-panel{bottom:7%;gap:8px}[data-visual-style=laterano] .inventory-column{padding-top:18px;padding-bottom:22px}[data-visual-style=laterano] .inventory-columns{margin-bottom:16px}[data-visual-style=laterano] .inventory-heading{margin-bottom:7px;padding-bottom:6px}[data-visual-style=laterano] .inventory-heading span{display:none}}
 @media(prefers-reduced-motion:reduce){[data-visual-style=laterano] .inventory-column{clip-path:none!important}}

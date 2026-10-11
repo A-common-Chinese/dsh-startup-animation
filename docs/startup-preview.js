@@ -130,8 +130,17 @@ function clickSound(){if(!audio||audio.state!=='running'||muted)return;const t=a
 function measureSceneLayout(){
  const origin=pane.getBoundingClientRect();
  const rect=node=>{const r=node.getBoundingClientRect();return{x:r.left-origin.left,y:r.top-origin.top,width:r.width,height:r.height};};
+ const heading=rect($('stageHeading'));
+ if(visualStyle==='laterano'&&!ui.inventoryPanel.hidden){
+  // Content sets the upper edge; CSS retains a readable floor for small windows.
+  // Never scale the DOM with a transform: these CSS-pixel bounds also anchor ink.
+  const gap=Math.max(12,Math.min(28,Math.min(width,height)*.026));
+  const top=Math.max(height*.30,heading.y+heading.height+gap);
+  const value=top.toFixed(2)+'px';
+  if(ui.inventoryPanel.style.getPropertyValue('--folio-top')!==value)ui.inventoryPanel.style.setProperty('--folio-top',value);
+ }
  sceneLayout={
-  heading:rect($('stageCopy')),
+  heading,
   identity:ui.identityCard.hidden?null:{...rect(ui.identityCard),rows:identityRows.map(node=>{const r=rect(node);return{y:r.y,height:r.height};})},
   inventory:ui.inventoryPanel.hidden?null:{...rect(ui.inventoryPanel),columns:inventoryColumns.map(rect)},
   book:null
@@ -416,14 +425,24 @@ ui.accessForm.addEventListener('submit',async event=>{
  ui.accessPassword.value='';
  const current=generation,unlocked=await local.unlock(password);
  if(embeddedEnded||current!==generation)return;
- if(unlocked){window.DSHEmbed?.unlocked();impulse=1;barriers();if(current===generation&&sequence.phase===2&&!sequence.playing)void start();refresh();announce('访问验证通过。');}
+ if(unlocked){
+  window.DSHEmbed?.unlocked();
+  if(visualStyle==='laterano'&&sequence.phase===2){
+   // The identity has already assembled while the operator types. Keep a short
+   // confirmation beat, then continue the same geometry into the folio. Voice
+   // and access barriers still own whether the sequence may leave this chapter.
+   const remaining=Math.max(.45*speed,reducedMotion.matches?0:1.65-sceneAge);
+   sequence.elapsed=Math.max(0,durations[2]-remaining);
+  }
+  impulse=1;barriers();if(current===generation&&sequence.phase===2&&!sequence.playing)void start();refresh();announce('访问验证通过。');
+ }
  else{ui.accessPassword.focus({preventScroll:true});announce(local.accessMessage);}
 });
 ui.saveIdentity.addEventListener('click',async()=>{const revision=draftRevision;const saved=await local.save(ui.identityName.value,ui.identityId.value);if(saved)window.DSHEmbed?.profileChanged();if(saved&&revision===draftRevision){profileDirty=false;ui.identityName.value=local.profile.username;ui.identityId.value=local.profile.badge_id;updateIdentity();}renderLocal();announce(local.saveMessage);});
 async function reconnectLocal(){const connected=await local.connect(true);if(connected&&sequence.phase===3&&!sequence.completed){local.cancelLoad();beginLocalLoad();}renderLocal();refresh();}
 ui.connectLocal.addEventListener('click',reconnectLocal);ui.accessRetry.addEventListener('click',reconnectLocal);
 new ResizeObserver(resize).observe(pane);window.addEventListener('resize',resize);
-const geometryObserver=new ResizeObserver(()=>{layoutDirty=true;refresh();});geometryObserver.observe($('stageCopy'));geometryObserver.observe(ui.identityCard);geometryObserver.observe(ui.inventoryPanel);geometryObserver.observe($('inventoryBook'));inventoryColumns.forEach(node=>geometryObserver.observe(node));
+const geometryObserver=new ResizeObserver(()=>{layoutDirty=true;refresh();});geometryObserver.observe($('stageCopy'));geometryObserver.observe($('stageHeading'));geometryObserver.observe(ui.identityCard);geometryObserver.observe(ui.inventoryPanel);geometryObserver.observe($('inventoryBook'));inventoryColumns.forEach(node=>geometryObserver.observe(node));
 for(const node of [$('skillsHeading'),$('pluginsHeading'),ui.skillsList,ui.pluginsList])geometryObserver.observe(node);
 for(const list of [ui.skillsList,ui.pluginsList])list.addEventListener('scroll',()=>{layoutDirty=true;refresh();},{passive:true});
 document.fonts?.ready.then(()=>{layoutDirty=true;refresh();});

@@ -80,7 +80,7 @@ function createHarness(options = {}) {
         id,
         hidden: id === 'controlPanel',
         value: id === 'identityName' ? 'OPERATOR' : id === 'identityId' ? 'DSH-0001' : '',
-        textContent: '', dataset: {}, style: { setProperty(name, value) { this[name] = value; } }, classList: classList(), attributes: new Map(),
+        textContent: '', dataset: {}, style: { setProperty(name, value) { this[name] = value; }, getPropertyValue(name) { return this[name] ?? ''; } }, classList: classList(), attributes: new Map(),
         captures: new Set(),
         children: [],
         appendChild(child) { child.parentElement = child.parentNode = this; this.children.push(child); return child; },
@@ -883,12 +883,65 @@ async function main() {
     if (url === '/api/load') return stream.response;
     return jsonResponse({ message: 'Not found' }, 404);
   };
+  // A settled password screen keeps a readable confirmation beat, then hands
+  // its actual painted geometry to the book. Narration can still hold the gate.
+  for (const [speed, holdVoice] of [[1, false], [2, false], [.5, true]]) {
+    let verified = false;
+    const confirmationStream = ndjsonStream();
+    const confirmationVoice = { busy: false, unlock() {}, phase() {}, cancel() { this.busy = false; }, setMuted() {} };
+    const confirmation = createHarness({
+      voice: confirmationVoice, fetch: lateranoFetch(confirmationStream),
+      accessFetch: async url => {
+        if (url === '/api/access/unlock') verified = true;
+        return jsonResponse({ ...accessStatus(), unlocked: verified, profile: { ...profileFixture, visual_style: 'laterano' } });
+      },
+      rectangles: {
+        canvasPane: { left: 37, top: 29, width: 1280, height: 720 },
+        stageCopy: { left: 335, top: 130, width: 670, height: 458 },
+        stageHeading: { left: 335, top: 130, width: 670, height: 126 },
+        identityCard: { left: 440, top: 292, width: 440, height: 264 },
+      },
+    }); await settle();
+    confirmation.element('speed').value = String(speed); confirmation.element('speed').emit('change');
+    confirmation.element('skip').emit('click');
+    confirmation.frame(3601);
+    assert.equal(confirmation.drawStates.at(-1).phase, 2);
+    assert.equal(confirmation.drawStates.at(-1).visualProgress, 1);
+    assert.equal(confirmation.requests.filter(request => request.url === '/api/load').length, 0, 'waiting at the password card must never start discovery');
+    const identityBeforePassword = confirmation.drawStates.at(-1).layout.identity;
+    confirmationVoice.busy = holdVoice;
+    confirmation.element('accessPassword').value = 'confirmation-test-password'; confirmation.element('accessForm').emit('submit');
+    await settle(); await settle();
+    assert.equal(confirmation.element('accessEntry').hidden, true);
+    assert.equal(confirmation.drawStates.at(-1).phase, 2, 'verification must not immediately cut away the identity geometry');
+    assert.deepEqual(confirmation.drawStates.at(-1).layout.identity, identityBeforePassword, 'verified feedback must preserve the measured identity architecture');
+    confirmation.frame(4001);
+    assert.equal(confirmation.drawStates.at(-1).phase, 2, 'confirmation must remain readable for at least 400ms at every speed');
+    let finalIdentity = confirmation.drawStates.at(-1);
+    const copiesBeforeBook = confirmation.canvasCalls.filter(call => call.op === 'drawImage').length;
+    confirmation.frame(4301); await settle();
+    if (holdVoice) {
+      assert.equal(confirmation.drawStates.at(-1).phase, 2, 'shortening confirmation must not bypass the identity narration barrier');
+      assert.equal(confirmation.requests.filter(request => request.url === '/api/load').length, 0);
+      finalIdentity = confirmation.drawStates.at(-1);
+      confirmationVoice.busy = false; confirmation.frame(4302); await settle();
+    }
+    const binding = confirmation.drawStates.at(-1);
+    assert.equal(binding.phase, 3, 'the finished identity must continue into the book without replaying a full identity chapter');
+    assert.deepEqual(binding.bookSource.layout, finalIdentity.layout, 'the verified handoff must inherit the actual last drawn identity bounds');
+    assert.equal(binding.bookSource.progress, finalIdentity.visualProgress);
+    assert.equal(binding.bookOpen, 0, 'password success must not expose text before the source geometry opens its leaves');
+    assert.equal(confirmation.canvasCalls.filter(call => call.op === 'drawImage').length, copiesBeforeBook, 'verified identity must recompose as vectors instead of cross-fading a snapshot');
+    assert.equal(confirmation.requests.filter(request => request.url === '/api/load').length, 1, 'only the authorized book phase may request the real catalogs');
+    confirmation.windowEvents.emit('pagehide'); confirmationStream.close(); await settle();
+  }
   // The portal-to-folio handoff must carry measured source geometry, not a
   // screenshot that merely fades over an unrelated pair of page rectangles.
   const portalStream = ndjsonStream();
   const portalRectangles = {
     canvasPane: { left: 47, top: 31, width: 1280, height: 720 },
-    stageCopy: { left: 290, top: 125, width: 700, height: 130 },
+    stageCopy: { left: 290, top: 125, width: 700, height: 435 },
+    stageHeading: { left: 290, top: 125, width: 700, height: 130 },
     identityCard: { left: 405, top: 339, width: 490, height: 205 },
     inventoryPanel: { left: 230, top: 330, width: 924, height: 314 },
     inventoryBook: { left: 230, top: 330, width: 924, height: 260 },
@@ -899,6 +952,8 @@ async function main() {
   portalBook.element('seek').value = '9.59'; portalBook.element('seek').emit('input');
   const outgoingPortal = portalBook.drawStates.at(-1);
   assert.equal(outgoingPortal.phase, 2);
+  assert.deepEqual(JSON.parse(JSON.stringify(outgoingPortal.layout.heading)), { x: 243, y: 94, width: 700, height: 130 },
+    'architecture must anchor to the title alone, not the flex group containing its identity card');
   const portalCopies = portalBook.canvasCalls.filter(call => call.op === 'drawImage').length;
   portalBook.tap(); await settle(); portalBook.frame(21);
   const collectedPortal = portalBook.drawStates.at(-1);
@@ -926,6 +981,39 @@ async function main() {
   assert.equal(portalBook.drawStates.at(-1).bookAge, ageBeforeResize, 'resizing must not restart the unfolding clock');
   assert.deepEqual(JSON.parse(JSON.stringify(portalBook.drawStates.at(-1).bookSource)), sourceBeforeResize,
     'remeasuring the destination must not replace the saved source with the new book');
+  // Reshape the viewport itself, rather than only nudging a destination leaf.
+  // The source stays in its captured coordinate system while the real pages
+  // and their writing exclusions are measured again at the new aspect ratio.
+  const openingBeforeResize = portalBook.drawStates.at(-1).bookOpen;
+  for (const geometry of [
+    { origin: [19, 23], viewport: [390, 844], leafY: 350, leafHeight: 280, leftX: 24, leftWidth: 163, rightX: 209, rightWidth: 157 },
+    { origin: [31, 17], viewport: [900, 420], leafY: 150, leafHeight: 204, leftX: 130, leftWidth: 308, rightX: 457, rightWidth: 313 },
+  ]) {
+    const { origin: [x, y], viewport: [width, height], leafY, leafHeight, leftX, leftWidth, rightX, rightWidth } = geometry;
+    portalRectangles.canvasPane = { left: x, top: y, width, height };
+    portalRectangles.inventoryBook = { left: x + leftX, top: y + leafY, width: rightX + rightWidth - leftX, height: leafHeight };
+    portalRectangles.inventoryPanel = { ...portalRectangles.inventoryBook, height: leafHeight + 20 };
+    for (const [page, heading, list, start, span] of [
+      ['skillsPage', 'skillsHeading', 'skillsList', leftX, leftWidth],
+      ['pluginsPage', 'pluginsHeading', 'pluginsList', rightX, rightWidth],
+    ]) {
+      portalRectangles[page] = { left: x + start, top: y + leafY, width: span, height: leafHeight };
+      portalRectangles[heading] = { left: x + start + 12, top: y + leafY + 20, width: span - 24, height: 32 };
+      portalRectangles[list] = { left: x + start + 12, top: y + leafY + 66, width: span - 24, height: leafHeight - 94 };
+    }
+    portalBook.windowEvents.emit('resize');
+    const resized = portalBook.drawStates.at(-1);
+    assert.equal(portalBook.element('scene').width, width);
+    assert.equal(portalBook.element('scene').height, height);
+    assert.equal(resized.bookAge, ageBeforeResize, 'changing aspect ratio mid-binding must preserve its clock');
+    assert.equal(resized.bookOpen, openingBeforeResize, 'changing aspect ratio must not reveal or conceal another portion of the text');
+    assert.deepEqual(JSON.parse(JSON.stringify(resized.bookSource)), sourceBeforeResize, 'responsive reflow must not recapture an unrelated source');
+    assert.equal(resized.layout.book.gutterX, (leftX + leftWidth + rightX) / 2);
+    assert.deepEqual(JSON.parse(JSON.stringify(resized.layout.book.left.heading)), { x: leftX + 12, y: leafY + 20, width: leftWidth - 24, height: 32 });
+    assert.deepEqual(JSON.parse(JSON.stringify(resized.layout.book.right.list)), { x: rightX + 12, y: leafY + 66, width: rightWidth - 24, height: leafHeight - 94 },
+      'new page text bounds must follow the actual pane-relative responsive DOM, not the source scale');
+    assert.equal(portalBook.canvasCalls.filter(call => call.op === 'drawImage').length, portalCopies, 'resizing the unfolding geometry must not capture an old raster scene');
+  }
   portalBook.element('play').emit('click'); portalBook.frame(621);
   assert.equal(portalBook.drawStates.at(-1).bookAge, ageBeforeResize, 'pausing must freeze the portal-to-book construction');
   portalBook.element('seek').value = '9.6'; portalBook.element('seek').emit('input');
@@ -975,7 +1063,8 @@ async function main() {
   const leafHeight = () => book && !book.element('inventoryIssues').hidden ? 238 : 260;
   const bookRectangles = {
     canvasPane: { left: 47, top: 31, width: 1280, height: 720 },
-    stageCopy: { left: 290, top: 125, width: 700, height: 130 },
+    stageCopy: { left: 290, top: 125, width: 700, height: 435 },
+    stageHeading: { left: 290, top: 125, width: 700, height: 130 },
     inventoryPanel: { left: 230, top: 330, width: 924, height: 314 },
     inventoryBook: { left: 230, top: 330, width: 924, get height() { return leafHeight(); } },
     skillsPage: { left: 230, top: 330, width: 438, get height() { return leafHeight(); } },
@@ -1037,6 +1126,18 @@ async function main() {
   assert.equal(arrivedPose.layout.book.left.occupiedBottom, 409, 'true inventory arrival must replace message bounds with the real rendered row bounds');
   assert.equal(arrivedPose.layout.book.left.footerY, 495, 'the reserved footer must follow issue-driven flex reflow');
   const decorationAge = arrivedPose.bookAge;
+  const priorFolioTop = parseFloat(book.element('inventoryPanel').style.getPropertyValue('--folio-top'));
+  bookRectangles.stageHeading.height += 34;
+  book.resizeNode('stageHeading');
+  const tallerHeading = book.drawStates.at(-1).layout.heading;
+  const adjustedFolioTop = parseFloat(book.element('inventoryPanel').style.getPropertyValue('--folio-top'));
+  assert.ok(adjustedFolioTop > priorFolioTop && adjustedFolioTop > tallerHeading.y + tallerHeading.height,
+    'a wrapped title must move the folio CSS anchor below its measured bottom');
+  assert.equal(book.drawStates.at(-1).bookAge, decorationAge, 'a title reflow must not restart an already opening book');
+  bookRectangles.stageHeading.height -= 34;
+  book.resizeNode('stageHeading');
+  assert.equal(parseFloat(book.element('inventoryPanel').style.getPropertyValue('--folio-top')), priorFolioTop,
+    'removing a title wrap must restore the folio anchor instead of accumulating an offset');
   // A long name/source can wrap after font loading or responsive reflow without
   // changing the outer page. The actual list observer must move the safe area.
   rowMetrics.skillsList.rowHeight = 96;
