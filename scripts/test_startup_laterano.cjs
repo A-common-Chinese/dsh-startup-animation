@@ -77,6 +77,48 @@ function screenPoint(record, x = record.args[0], y = record.args[1]) {
   const [a, b, c, d, e, f] = record.matrix;
   return [a * x + c * y + e, b * x + d * y + f];
 }
+function paintedPaths(records) {
+  let commands = [];
+  const paths = [];
+  for (const record of records) {
+    if (record.op === 'beginPath') commands = [];
+    else if (['moveTo', 'lineTo', 'arc', 'bezierCurveTo', 'closePath', 'rect'].includes(record.op)) commands.push(record);
+    else if (record.op === 'fill' || record.op === 'stroke') paths.push({ ...record, commands: [...commands] });
+  }
+  return paths;
+}
+function pathSegments(path) {
+  const segments = [];
+  let at = null, origin = null;
+  function advance(point) { if (at && Math.hypot(at[0] - point[0], at[1] - point[1]) > 1e-9) segments.push([at, point]); at = point; }
+  for (const command of path.commands) {
+    const v = command.args;
+    if (command.op === 'moveTo') { at = screenPoint(command); origin = at; }
+    else if (command.op === 'lineTo') advance(screenPoint(command));
+    else if (command.op === 'closePath' && origin) advance(origin);
+    else if (command.op === 'arc') {
+      for (let sample = 0; sample <= 192; sample++) {
+        const angle = v[3] + (v[4] - v[3]) * sample / 192;
+        advance(screenPoint(command, v[0] + Math.cos(angle) * v[2], v[1] + Math.sin(angle) * v[2]));
+      }
+    } else if (command.op === 'bezierCurveTo') {
+      const start = at, p = [screenPoint(command, v[0], v[1]), screenPoint(command, v[2], v[3]), screenPoint(command, v[4], v[5])];
+      if (!start) continue;
+      for (let sample = 1; sample <= 48; sample++) {
+        const t = sample / 48, s = 1 - t;
+        advance([0, 1].map(axis => s ** 3 * start[axis] + 3 * s ** 2 * t * p[0][axis] + 3 * s * t ** 2 * p[1][axis] + t ** 3 * p[2][axis]));
+      }
+    }
+  }
+  return segments;
+}
+function distanceToSegments(point, segments) {
+  return Math.min(...segments.map(([a, b]) => {
+    const dx = b[0] - a[0], dy = b[1] - a[1], length = dx * dx + dy * dy;
+    const q = length ? Math.max(0, Math.min(1, ((point[0] - a[0]) * dx + (point[1] - a[1]) * dy) / length)) : 0;
+    return Math.hypot(point[0] - a[0] - dx * q, point[1] - a[1] - dy * q);
+  }));
+}
 const inventory = { status: 'complete', skills: [{ name: 'actual-skill' }], plugins: [{ name: 'actual-plugin' }], issues: [] };
 const base = { identity: 'CatShark / 星海', inventory, choice: 1, pointer: [.82, .22], drag: .8, impulse: .35 };
 let samples = 0, maxCommands = 0;
@@ -285,8 +327,18 @@ for (const [width, height, page] of [
   }
 }
 
-// Actual host book rectangles are in screen pixels, including a possibly
-// off-center binding. Every opening pose must reveal outward from that binding.
+// The last identity arch must survive as moving ink, including partial source
+// poses. Compare the actual outgoing arcs with the transformed paths at age 0;
+// this fails if a new approximate portal is simply faded in at the next chapter.
+const mainArches = records => paintedPaths(records).filter(path => path.op === 'stroke' && path.lineWidth === 2.3 && path.globalAlpha === .88);
+const folioPaper = records => paintedPaths(records).filter(path => path.op === 'fill' &&
+  ['#183459', '#294974', '#dce6ed', '#1c3047', '#f6f7f6', '#0c1424', '#ffffff', '#101c2d'].includes(path.fillStyle) &&
+  path.commands.filter(command => command.op === 'bezierCurveTo').length >= 3);
+const pathBounds = path => {
+  const points = pathSegments(path).flat();
+  return { left: Math.min(...points.map(point => point[0])), right: Math.max(...points.map(point => point[0])),
+    top: Math.min(...points.map(point => point[1])), bottom: Math.max(...points.map(point => point[1])) };
+};
 for (const [width, height, book] of [
   [1528, 732, { x: 305, y: 318, width: 922, height: 247, gutterX: 755, spread: true,
     left: { x: 305, y: 318, width: 437, height: 247 }, right: { x: 768, y: 318, width: 459, height: 247 } }],
@@ -294,26 +346,82 @@ for (const [width, height, book] of [
     left: { x: 24, y: 350, width: 163, height: 280 }, right: { x: 209, y: 350, width: 157, height: 280 } }],
 ]) {
   const unit = Math.min(width, height) / 1000;
-  const geometry = records => records.filter(record => record.op === 'rect' && Math.abs(record.args[3] * unit - (book.height + 54 * unit)) < 1e-7);
-  for (const bookOpen of [0, .2, .5, 1]) {
-    const state = { ...base, visualProgress: .75, textAge: 3, bookOpen, impulse: 0, layout: { book, inventory: book } };
-    const loading = render(width, height, { ...state, phase: 3 }), ready = render(width, height, { ...state, phase: 4 });
-    const clips = geometry(loading.records);
-    assert.equal(clips.length, 2, 'each measured folio leaf needs one outward reveal mask');
-    for (let index = 0; index < 2; index++) {
-      const page = index ? book.right : book.left, edge = index ? page.x + page.width : page.x;
-      const clip = clips[index], from = screenPoint(clip), to = screenPoint(clip, clip.args[0] + clip.args[2], clip.args[1] + clip.args[3]);
-      const movingEdge = book.gutterX + (edge - book.gutterX) * bookOpen;
-      assert.ok(Math.abs(from[0] - Math.min(book.gutterX, movingEdge)) < 1e-7 && Math.abs(to[0] - Math.max(book.gutterX, movingEdge)) < 1e-7,
-        'the page reveal must start at the measured shared gutter and expand toward its actual outer edge');
-      assert.ok(Math.abs(from[1] - (page.y - 18 * unit)) < 1e-7, 'folio mask must stay aligned with its actual page top');
-    }
-    assert.deepEqual(geometry(ready.records), clips, 'receiving results must carry the open folio into the next chapter without refolding');
-    if (bookOpen > .5) {
-      const binding = loading.records.filter(record => record.op === 'moveTo' && record.lineWidth === 1.5 && record.globalAlpha === .94);
-      assert.ok(binding.some(record => Math.abs(screenPoint(record)[0] - book.gutterX) < 1e-7 &&
-        Math.abs(screenPoint(record)[1] - (book.y - 10 * unit)) < 1e-7), 'the book spine must follow the measured gutter through resizing');
+  const sourceLayout = { identity: { x: width * .28, y: height * .43, width: width * .41, height: height * .27 },
+    heading: { x: width * .20, y: height * .17, width: width * .60, height: height * .18 } };
+  const state = { ...base, phase: 3, progress: .75, visualProgress: .75, textAge: 3, impulse: 0,
+    bookOpen: 0, layout: { book, inventory: book }, bookSource: { phase: 2, progress: 1, viewport: { width, height }, layout: sourceLayout } };
+  const frame = (bookAge, changes = {}) => render(width, height, { ...state, bookAge, ...changes });
+  for (const progress of [.4, .55, 1]) {
+    const old = render(width, height, { ...base, phase: 2, visualProgress: progress, impulse: 0, layout: sourceLayout });
+    const next = frame(0, { bookSource: { ...state.bookSource, progress } });
+    const oldSegments = mainArches(old.records).flatMap(pathSegments), nextSegments = mainArches(next.records).flatMap(pathSegments);
+    assert.ok(oldSegments.length && nextSegments.length, 'both chapters must draw the actual highlighted pointed arch');
+    for (const [points, segments] of [[oldSegments.flat(), nextSegments], [nextSegments.flat(), oldSegments]]) {
+      const distance = Math.max(...points.map(point => distanceToSegments(point, segments)));
+      assert.ok(distance < .8,
+        `source arch must be geometrically continuous at ${width}px, source progress ${progress}; discontinuity ${distance.toFixed(3)}px`);
     }
   }
+  // The physical outlines move continuously, retaining their opaque ink rather
+  // than disappearing and being replaced by the destination page at a cut.
+  for (const age of [.1, .3, .48, .56, .68, .72, 1.08, 1.35, 1.65, 1.72]) {
+    const before = mainArches(frame(age).records).flatMap(pathSegments).flat();
+    const after = mainArches(frame(age + .00001).records).flatMap(pathSegments).flat();
+    assert.equal(before.length, after.length, 'the same arch topology must survive each choreography boundary');
+    assert.ok(before.every((point, i) => Math.hypot(point[0] - after[i][0], point[1] - after[i][1]) < .1),
+      'an infinitesimal clock advance must not jump the source geometry');
+  }
+  const movingPoints = age => mainArches(frame(age).records).flatMap(pathSegments).flat();
+  const distanceFromBinding = points => Math.max(...points.map(point => Math.abs(point[0] - book.gutterX)));
+  assert.ok(distanceFromBinding(movingPoints(.56)) < distanceFromBinding(movingPoints(0)) * .3,
+    'the original arches must collect around the measured binding before becoming the page rims');
+
+  const covers = folioPaper(frame(.6).records);
+  assert.ok(covers.length > 0 && covers.every(path => path.fillStyle === '#183459'), 'covers lead the construction before any paper leaf opens');
+  const midPaper = folioPaper(frame(.90).records);
+  assert.ok(midPaper.some(path => path.fillStyle === '#dce6ed') && midPaper.some(path => path.fillStyle === '#f6f7f6'),
+    'the two underleaves must already be following the cover on distinct delayed trajectories');
+  assert.ok(!midPaper.some(path => path.fillStyle === '#ffffff'), 'the main white leaf must enter after the underleaves');
+  const latePaper = folioPaper(frame(1.2).records);
+  assert.ok(latePaper.some(path => path.fillStyle === '#ffffff'), 'the final writing leaf must eventually open');
+  const leftSheets = latePaper.filter(path => pathBounds(path).right <= book.gutterX + .001);
+  const byColor = ink => pathBounds(leftSheets.find(path => path.fillStyle === ink));
+  assert.ok(byColor('#183459').left < byColor('#dce6ed').left && byColor('#dce6ed').left < byColor('#f6f7f6').left &&
+    byColor('#f6f7f6').left < byColor('#ffffff').left,
+    'cover, underleaves and writing leaf must have visibly distinct extents during the staggered opening');
+
+  const complete = frame(2.5, { bookOpen: 1 }), registered = frame(2.5, { phase: 4, bookOpen: 1 });
+  const fullPaper = folioPaper(complete.records);
+  const writingLeaves = fullPaper.filter(path => path.fillStyle === '#ffffff');
+  assert.equal(writingLeaves.length, 2, 'the completed spread must retain two writing surfaces');
+  for (const leaf of writingLeaves) {
+    const bounds = pathBounds(leaf), left = bounds.right <= book.gutterX;
+    const expected = left ? book.left.x : book.right.x + book.right.width;
+    assert.ok(Math.abs((left ? bounds.left : bounds.right) - expected) < 1e-7,
+      'the final paper edge must meet the actual measured page edge');
+    assert.ok(leaf.commands.some(command => command.op === 'lineTo') && leaf.commands.filter(command => command.op === 'bezierCurveTo').length >= 3,
+      'paper needs bowed edges, a cut corner and a binding contour, not a rectangle mask');
+    assert.ok(bounds.top < book.y && bounds.bottom > book.y + book.height,
+      'the contour must surround the real typesetting rectangle');
+    const [a, b, c, d] = leaf.matrix;
+    assert.ok(a === unit && d === unit && b === 0 && c === 0, 'the spread remains flat without perspective or skew');
+  }
+  assert.deepEqual(folioPaper(registered.records), fullPaper, 'registration must preserve the already opened physical folio');
+  assert.deepEqual(mainArches(registered.records), mainArches(complete.records), 'the recomposed arch ink must not restart at registration');
+  const binding = paintedPaths(complete.records).filter(path => path.op === 'stroke' && path.lineWidth === 1.2);
+  assert.ok(binding.some(path => pathSegments(path).some(([a, b]) => Math.abs(a[0] - book.gutterX) < 1e-7 && Math.abs(b[0] - book.gutterX) < 1e-7)),
+    'the source axis must finish as the actual off-center book spine');
+
+  // Resizing must reproject the saved source measurements, while standalone
+  // chapter seeks can use the identity fallback without stale screen geometry.
+  const shrunk = { width: width * .7, height: height * .7 };
+  const oldOnNewViewport = render(shrunk.width, shrunk.height, { ...base, phase: 2, visualProgress: 1, impulse: 0,
+    layout: Object.fromEntries(Object.entries(sourceLayout).map(([name, box]) => [name, Object.fromEntries(Object.entries(box).map(([key, value]) => [key, value * .7]))])) });
+  const changedViewport = render(shrunk.width, shrunk.height, { ...state, bookAge: 0 });
+  const projected = mainArches(changedViewport.records).flatMap(pathSegments);
+  assert.ok(mainArches(oldOnNewViewport.records).flatMap(pathSegments).flat().every(point => distanceToSegments(point, projected) < .8),
+    'saved source geometry must follow the original viewport when the current viewport changes');
+  const fallback = frame(0, { bookSource: null });
+  assert.ok(mainArches(fallback.records).length, 'direct chapter entry must still construct a portal without a captured source');
 }
-console.log(`PASS: ${samples} Laterano frames, exact measured geometry, single upright iris, radiant seals/braids, center-opening folio, gate continuity, truthful inventory and reduced motion. Peak: ${maxCommands}/12000.`);
+console.log(`PASS: ${samples} Laterano frames, exact measured geometry, single upright iris, portal-to-spine continuity, staggered curved folio, truthful inventory and reduced motion. Peak: ${maxCommands}/12000.`);

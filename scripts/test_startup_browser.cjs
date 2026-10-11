@@ -715,6 +715,61 @@ async function main() {
     if (url === '/api/load') return stream.response;
     return jsonResponse({ message: 'Not found' }, 404);
   };
+  // The portal-to-folio handoff must carry measured source geometry, not a
+  // screenshot that merely fades over an unrelated pair of page rectangles.
+  const portalStream = ndjsonStream();
+  const portalRectangles = {
+    canvasPane: { left: 47, top: 31, width: 1280, height: 720 },
+    stageCopy: { left: 290, top: 125, width: 700, height: 130 },
+    identityCard: { left: 405, top: 339, width: 490, height: 205 },
+    inventoryPanel: { left: 230, top: 330, width: 924, height: 314 },
+    inventoryBook: { left: 230, top: 330, width: 924, height: 260 },
+    skillsPage: { left: 230, top: 330, width: 438, height: 260 },
+    pluginsPage: { left: 688, top: 330, width: 466, height: 260 },
+  };
+  const portalBook = createHarness({ fetch: lateranoFetch(portalStream), rectangles: portalRectangles }); await settle();
+  portalBook.element('seek').value = '9.59'; portalBook.element('seek').emit('input');
+  const outgoingPortal = portalBook.drawStates.at(-1);
+  assert.equal(outgoingPortal.phase, 2);
+  const portalCopies = portalBook.canvasCalls.filter(call => call.op === 'drawImage').length;
+  portalBook.tap(); await settle(); portalBook.frame(21);
+  const collectedPortal = portalBook.drawStates.at(-1);
+  assert.equal(collectedPortal.phase, 3);
+  assert.equal(collectedPortal.bookSource.phase, 2);
+  assert.deepEqual(collectedPortal.bookSource.layout, outgoingPortal.layout,
+    'book construction must start from the actual last painted portal rectangles');
+  assert.equal(collectedPortal.bookSource.progress, outgoingPortal.visualProgress,
+    'the source pose must preserve the last painted construction progress');
+  assert.deepEqual(JSON.parse(JSON.stringify(collectedPortal.bookSource.viewport)), { width: 1280, height: 720 },
+    'source coordinates must retain their original viewport for resize reprojection');
+  assert.equal(collectedPortal.bookOpen, 0, 'body text must remain covered while the portal collects into the binding');
+  assert.equal(portalBook.canvasCalls.filter(call => call.op === 'drawImage').length, portalCopies,
+    'portal geometry must transform directly without capturing a whole-scene fade');
+  assert.equal(Number(portalBook.element('sceneTransition').style.opacity), 0);
+  portalBook.frame(421);
+  assert.ok(portalBook.drawStates.at(-1).bookAge > collectedPortal.bookAge, 'the binding has its own continuous playback clock');
+  assert.equal(portalBook.drawStates.at(-1).bookOpen, 0, 'early covers must not expose the body text');
+  const ageBeforeResize = portalBook.drawStates.at(-1).bookAge;
+  const sourceBeforeResize = JSON.parse(JSON.stringify(portalBook.drawStates.at(-1).bookSource));
+  portalRectangles.pluginsPage.left += 26;
+  portalRectangles.pluginsPage.width -= 26;
+  portalBook.windowEvents.emit('resize');
+  assert.equal(portalBook.drawStates.at(-1).layout.book.gutterX, 644, 'a resize must remeasure the real destination binding');
+  assert.equal(portalBook.drawStates.at(-1).bookAge, ageBeforeResize, 'resizing must not restart the unfolding clock');
+  assert.deepEqual(JSON.parse(JSON.stringify(portalBook.drawStates.at(-1).bookSource)), sourceBeforeResize,
+    'remeasuring the destination must not replace the saved source with the new book');
+  portalBook.element('play').emit('click'); portalBook.frame(621);
+  assert.equal(portalBook.drawStates.at(-1).bookAge, ageBeforeResize, 'pausing must freeze the portal-to-book construction');
+  portalBook.element('seek').value = '9.6'; portalBook.element('seek').emit('input');
+  assert.equal(portalBook.drawStates.at(-1).bookSource, null, 'direct seeking to a book must discard an unrelated saved portal');
+  assert.equal(portalBook.drawStates.at(-1).bookAge, 0);
+  portalBook.element('seek').value = '11.2'; portalBook.element('seek').emit('input');
+  assert.ok(Math.abs(portalBook.drawStates.at(-1).bookAge - 1.6) < 1e-9);
+  assert.ok(portalBook.drawStates.at(-1).bookOpen > 0 && portalBook.drawStates.at(-1).bookOpen < 1,
+    'seeking into the body-reveal interval must select that actual pose');
+  portalBook.element('seek').value = '9.8'; portalBook.element('seek').emit('input');
+  assert.equal(portalBook.drawStates.at(-1).bookOpen, 0, 'backward seeking must be able to close an already opened text mask');
+  portalBook.windowEvents.emit('pagehide'); portalStream.close(); await settle();
   // Waiting is a playback gate, not a second animation clock. Confirming a
   // partly composed scene must preserve its pose; explicit seeks still rewind.
   const smoothGate = createHarness({ fetch: lateranoFetch(ndjsonStream()) }); await settle();
@@ -768,6 +823,8 @@ async function main() {
     left: { x: 183, y: 299, width: 438, height: 260 }, right: { x: 641, y: 299, width: 466, height: 260 },
   }, 'folio bounds and spine must derive from actual DOM leaves relative to the canvas pane');
   book.tap(); await settle(); book.frame(401);
+  assert.equal(book.drawStates.at(-1).bookOpen, 0, 'a direct book seek must still construct covers before revealing body text');
+  book.frame(1601);
   const readingPose = book.drawStates.at(-1);
   assert.equal(readingPose.phase, 3);
   assert.ok(readingPose.bookOpen > 0 && readingPose.bookOpen < 1);
@@ -785,14 +842,17 @@ async function main() {
   assert.equal(arrivedPose.layout.book.height, 238, 'the folio must remeasure after the real issue message compresses its flex area');
   assert.equal(arrivedPose.layout.book.left.height, 238);
   assert.equal(arrivedPose.layout.book.right.height, 238, 'both leaf baselines must follow the new measured height');
-  book.frame(1501);
+  book.frame(2501);
   const originalSkillRow = book.element('skillsList').children[0];
   assert.equal(originalSkillRow.children[0].getAttribute('data-lettering'), 'settled');
+  const ageBeforeRegistration = book.drawStates.at(-1).bookAge;
   const copiesBeforeRegistration = book.canvasCalls.filter(call => call.op === 'drawImage').length;
   book.frame(5001);
   assert.equal(book.drawStates.at(-1).phase, 4);
   assert.equal(book.drawStates.at(-1).waiting, true);
   assert.equal(book.drawStates.at(-1).bookOpen, 1, 'registration must retain the already opened folio');
+  assert.equal(book.drawStates.at(-1).bookAge, ageBeforeRegistration + 2.5,
+    'the registration chapter must continue the construction clock rather than substituting a new page pose');
   assert.equal(book.canvasCalls.filter(call => call.op === 'drawImage').length, copiesBeforeRegistration,
     'discovery to registration is the same open book, not an overlapping whole-page snapshot');
   assert.equal(book.element('skillsList').children[0], originalSkillRow, 'the real inventory rows must be carried into registration');
@@ -846,15 +906,15 @@ async function main() {
   }
   halfSpeed.element('speed').value = '.5'; halfSpeed.element('speed').emit('change');
   normalSpeed.tap(); halfSpeed.tap(); await settle();
-  normalSpeed.frame(401); halfSpeed.frame(801);
+  normalSpeed.frame(1601); halfSpeed.frame(3201);
   assert.equal(halfSpeed.drawStates.at(-1).bookOpen, normalSpeed.drawStates.at(-1).bookOpen,
     'half speed over twice the wall time must reach the same page-opening pose');
-  normalSpeed.frame(801);
+  normalSpeed.frame(2001);
   assert.ok(halfSpeed.drawStates.at(-1).bookOpen < normalSpeed.drawStates.at(-1).bookOpen,
     'half speed must not finish the folio at normal-speed wall time');
   normalSpeed.windowEvents.emit('pagehide'); halfSpeed.windowEvents.emit('pagehide');
   normalStream.close(); halfStream.close(); await settle();
-  console.log('PASS: startup lifecycle, real inventory, voice/access barriers, persisted styles, measured center-opening folio, uninterrupted scene clocks, continuous transitions and reduced motion.');
+  console.log('PASS: startup lifecycle, real inventory, voice/access barriers, persisted styles, measured portal-to-binding handoff, delayed body reveal, uninterrupted folio clocks, continuous transitions and reduced motion.');
 }
 
 main().catch(error => { console.error(error); process.exitCode = 1; });

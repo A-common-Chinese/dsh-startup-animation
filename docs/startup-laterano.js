@@ -64,6 +64,21 @@
     const bookLeft = measured(state.layout?.book?.left), bookRight = measured(state.layout?.book?.right);
     const bookGutter = Number.isFinite(state.layout?.book?.gutterX) ? (state.layout.book.gutterX - width / 2) / unit : 0;
     const bookOpen = reduced ? 1 : Number.isFinite(state.bookOpen) ? clamp(state.bookOpen) : ease(section(progress, .10, .75));
+    // A single clock owns the entire identity → folio construction, including
+    // discovery → results. Text reveal is deliberately independent of the ink.
+    const bookAge = reduced ? 3 : Math.max(0, finite(state.bookAge,
+      Number.isFinite(state.bookOpen) ? clamp(state.bookOpen) * 2.02 : progress * 2.02));
+    const bookBuild = smooth(section(bookAge, .10, 1.72));
+    function sourceMeasured(value) {
+      const viewport = state.bookSource?.viewport;
+      if (!value || !viewport || !(viewport.width > 0 && viewport.height > 0)) return measured(value);
+      const sx = width / viewport.width, sy = height / viewport.height;
+      return measured({ ...value, x: value.x * sx, y: value.y * sy,
+        width: value.width * sx, height: value.height * sy });
+    }
+    const sourceIdentity = sourceMeasured(state.bookSource?.layout?.identity);
+    const sourceHeading = sourceMeasured(state.bookSource?.layout?.heading);
+    const coverInk = light ? '#183459' : '#294974';
     // Measured cards and headings are authoritative. The secondary corridor is
     // only a fallback for standalone renderers without DOM measurements.
     const headingBox = measured(state.layout?.heading) || (phase === 1 ? { left: -W * .34, right: W * .34, top: atY(.29), bottom: atY(.47) } :
@@ -447,8 +462,9 @@
         section(amount, .04, .92), color.ink, .94, 0);
       if (wide) {
         const left = -W * .437;
-        triptych(left, atY(book ? .59 : .47), 145, 219, section(amount, .02, .88), .86);
-        patternedPanel(W * .445, atY(book ? .745 : .754), 63, 152, section(amount, .12, .92));
+        const move = book ? smooth(section(bookAge, .1, 1.2)) : 0;
+        triptych(left, atY(lerp(.47, .59, move)), 145, 219, section(amount, .02, .88), .86);
+        patternedPanel(W * .445, atY(lerp(.754, .745, move)), 63, 152, section(amount, .12, .92));
         radiantSeal(left, atY(.29), 53, section(amount, .08, .93), .86);
         braid(left - 70, atY(.733), 141, section(amount, .24, .97), .85);
         engravedCorner(-W * .37, atY(.18), 1, section(amount, .08, .96), .74);
@@ -592,9 +608,9 @@
         }
       }
     }
-    function codexLeaves(box) {
-      // Both paper leaves use the exact, untransformed DOM page rectangles.
-      // Ink is revealed from the common binding; text is never scaled or skewed.
+    function folioGeometry(box) {
+      // The DOM rectangles are padded typesetting areas. A manuscript contour
+      // may bend around them, but neither text nor measured layout is skewed.
       const center = bookBox ? bookGutter : (box.left + box.right) / 2;
       const gap = Math.min(22, (box.right - box.left) * .025);
       const leaves = [
@@ -602,70 +618,231 @@
         bookRight || { left: center + gap, right: box.right, top: box.top, bottom: box.bottom },
       ];
       const top = Math.min(...leaves.map(leaf => leaf.top)), bottom = Math.max(...leaves.map(leaf => leaf.bottom));
+      return { center, top, bottom, leaves };
+    }
+    function cubic(a, b, c, d, t) {
+      const s = 1 - t;
+      return s * s * s * a + 3 * s * s * t * b + 3 * s * t * t * c + t * t * t * d;
+    }
+    function pageRim(folio, leaf, side, t, outset = 0) {
+      const edge = (side < 0 ? leaf.left : leaf.right) + side * outset;
+      const span = Math.abs(edge - folio.center), top = leaf.top - outset * .2;
+      if (t < .22) return [edge, lerp(leaf.bottom - 16 + outset, top - 7, t / .22)];
+      const q = section(t, .22, 1);
+      return [cubic(edge, edge - side * span * .2, folio.center + side * span * .2, folio.center + side * 5, q),
+        cubic(top - 7, top - 22, top - 22, top + 10, q)];
+    }
+    function folioConstruction(folio) {
+      // These are the same three pointed arches, spring line, axis and sun
+      // capitals as identityScene. Their points physically converge on the
+      // binding, then become the rims, endbands and cover of this very book.
+      // No retained bitmap, crossfade or opacity replacement owns this handoff.
+      const source = sourceIdentity || { left: -W * .24, right: W * .24, top: atY(.43), bottom: atY(.72) };
+      const head = sourceHeading || { bottom: Math.min(source.top, atY(.44)) };
+      const x = (source.left + source.right) / 2;
+      const half = Math.min(W * .39, (source.right - source.left) / 2 + 68);
+      const spring = source.top + 55, base = source.bottom + 28;
+      const capitalY = Math.max(spring - 8, head.bottom + 67), columnTop = Math.max(spring, capitalY + 50);
+      const gather = smooth(section(bookAge, 0, .68));
+      const spread = smooth(section(bookAge, .56, 1.65));
+      const srcProgress = clamp(finite(state.bookSource?.progress, 1));
+      const sourceConstruction = smooth(section(srcProgress, 0, .27));
+      const sourceLocked = smooth(section(srcProgress, .57, .81));
+      const sourceCapital = section(srcProgress, .18, .90);
+      const phasePoint = (sourcePoint, bindingPoint, pagePoint) => [
+        lerp(lerp(sourcePoint[0], bindingPoint[0], gather), pagePoint[0], spread),
+        lerp(lerp(sourcePoint[1], bindingPoint[1], gather), pagePoint[1], spread),
+      ];
+      const movingHole = box => {
+        if (!box || gather >= .999) return null;
+        const cx = lerp((box.left + box.right) / 2, folio.center, gather);
+        const cy = lerp((box.top + box.bottom) / 2, (folio.top + folio.bottom) / 2, gather);
+        const scale = Math.pow(1 - gather, 2), hw = (box.right - box.left) * .5 * scale, hh = (box.bottom - box.top) * .5 * scale;
+        return { left: cx - hw, right: cx + hw, top: cy - hh, bottom: cy + hh };
+      };
+      outside([movingHole(sourceIdentity), movingHole(sourceHeading)], () => {
+        for (let inset = 0; inset < 3; inset++) {
+          const radius = half + inset * 14;
+          const sourceAmount = smooth(section(srcProgress, .19 + inset * .04, .70 + inset * .035));
+          const curve = Math.min(1, sourceAmount * 1.5), legs = smooth(section(sourceAmount, .43, 1));
+          for (let index = 0; index < 2; index++) {
+            const side = index ? 1 : -1, leaf = folio.leaves[index], points = [];
+            const bindingPoint = t => [folio.center + side * (4 + inset * 3), lerp(folio.bottom + 12, folio.top + 10, t)];
+            const legPoints = [
+              phasePoint([x + side * radius, lerp(spring, base, legs)], bindingPoint(0), pageRim(folio, leaf, side, 0, 3 + inset * 4)),
+              phasePoint([x + side * radius, spring], bindingPoint(.22), pageRim(folio, leaf, side, .22, 3 + inset * 4)),
+            ];
+            trace(legPoints, 1, inset === 1 ? accent : color.line, inset === 1 ? .88 : .45, inset === 1 ? 2.3 : .8);
+            // Fixed cardinality makes the entire arc-to-paper transformation
+            // continuous even while the previous gate is still constructing.
+            for (let point = 0; point <= 32; point++) {
+              const q = point / 32, t = .22 + q * .78;
+              // The right source arc grows from the apex towards its spring;
+              // preserving that opposite direction matters for early skips.
+              const a = (index ? 1 - curve + curve * q : q * curve) * Math.PI / 3;
+              const start = [x + side * (2 * radius * Math.cos(a) - radius), spring - Math.sin(a) * radius * 2];
+              points.push(phasePoint(start, bindingPoint(t), pageRim(folio, leaf, side, t, 3 + inset * 4)));
+            }
+            trace(points, 1, inset === 1 ? accent : color.line, inset === 1 ? .88 : .45, inset === 1 ? 2.3 : .8);
+          }
+        }
+        // The two construction circles are resampled into the two long
+        // stitched cords. Their ink survives at the finished centre seam.
+        for (const side of [-1, 1]) {
+          const points = [];
+          for (let point = 0; point <= 40; point++) {
+            const t = point / 40, a = Math.PI * (1.05 + .90 * t * sourceConstruction);
+            const sourcePoint = [x + side * half + Math.cos(a) * half * 2, spring + Math.sin(a) * half * 2];
+            const target = [folio.center + side * (3 + Math.sin(t * Math.PI * 10) * 2), lerp(folio.top + 10, folio.bottom + 12, t)];
+            points.push(phasePoint(sourcePoint, target, target));
+          }
+          trace(points, 1, color.line, .30, .8);
+        }
+        const sourceLines = [
+          [[x - half * 1.5, spring], [x + half * 1.5, spring]],
+          [[x, spring - ROOT3 * half - 32], [x, base + 12]],
+        ];
+        sourceLines.forEach((points, index) => {
+          const target = index ? [[folio.center, folio.top - 5], [folio.center, folio.bottom + 23]] :
+            [[folio.center - 6, folio.top + 8], [folio.center + 6, folio.bottom + 13]];
+          const ends = points.map((point, i) => phasePoint(point, target[i], target[i]));
+          line(...ends[0], ...ends[1], index ? color.ink : color.line,
+            index ? lerp(.36 * sourceConstruction, .88, gather) : lerp(.36 * sourceConstruction, .36, gather), index ? 1.2 : .8);
+        });
+        for (let index = 0; index < 2; index++) {
+          const side = index ? 1 : -1, column = x + side * (half + 42), leaf = folio.leaves[index];
+          const edge = index ? leaf.right : leaf.left;
+          const columnBottom = lerp(columnTop, Math.max(columnTop, base), sourceLocked);
+          const startCorners = [[column - 4, columnTop], [column + 4, columnTop], [column + 4, columnBottom], [column - 4, columnBottom]];
+          const bindCorners = [[folio.center + side * 11 - 3, folio.top + 7], [folio.center + side * 11 + 3, folio.top + 7],
+            [folio.center + side * 11 + 3, folio.bottom + 18], [folio.center + side * 11 - 3, folio.bottom + 18]];
+          const coverCorners = [[edge + side * 7, leaf.top + 9], [edge + side * 13, leaf.top + 9],
+            [edge + side * 13, leaf.bottom - 5], [edge + side * 7, leaf.bottom - 5]];
+          polygon(startCorners.map((point, i) => phasePoint(point, bindCorners[i], coverCorners[i])), color.ink, .94);
+          // Cardinal plates from the capitals become the endband stitches;
+          // the remaining rays fan into small fore-edge engraved clasps.
+          for (let ray = 0; ray < 24; ray++) {
+            const a = ray * TAU / 24 - Math.PI / 2, inner = 45 * .46, outer = 45 * (ray % 3 ? .79 : 1);
+            const broad = ray % 3 ? 2 : 5.2;
+            const arrival = smooth(section(sourceCapital, .08 + ray % 6 * .024, .48 + ray % 6 * .032));
+            const local = [[inner, -broad], [lerp(inner, outer, arrival), 0], [inner, broad], [inner * .9, 0]];
+            const sourcePoints = local.map(([xx, yy]) => [column + xx * Math.cos(a) - yy * Math.sin(a), capitalY + xx * Math.sin(a) + yy * Math.cos(a)]);
+            const atTop = ray < 12, knotY = (atTop ? folio.top : folio.bottom) + (atTop ? 1 : 16);
+            const knotX = folio.center + side * (8 + ray % 12 * 1.4);
+            const binding = [[knotX - 1, knotY - 3], [knotX + 1, knotY - 4], [knotX + 1, knotY + 3], [knotX - 1, knotY + 4]];
+            const yy = lerp(leaf.top + 30, leaf.bottom - 34, (ray % 12) / 11);
+            const final = ray % 3 === 0 ? binding : [[edge + side * 5, yy - 2], [edge + side * 10, yy], [edge + side * 5, yy + 2], [edge + side * 6, yy]];
+            polygon(sourcePoints.map((point, i) => phasePoint(point, binding[i], final[i])), ray % 3 ? accent : color.ink, .88 * lerp(arrival, 1, gather));
+          }
+          // The capital centre itself docks as the head / tail ornament.
+          const p = phasePoint([column, capitalY], [folio.center, index ? folio.bottom + 21 : folio.top - 7],
+            [folio.center, index ? folio.bottom + 21 : folio.top - 7]);
+          const centreInk = lerp(smooth(section(sourceCapital, .12, .66)), 1, gather);
+          diamond(p[0], p[1], lerp(45 * .29, 6, gather), accent, .88 * centreInk, false);
+          diamond(p[0], p[1], lerp(45 * .12, 2.5, gather), color.ink, .88 * centreInk);
+        }
+        const crestX = lerp(x, folio.center, gather), crestY = lerp(spring - ROOT3 * half + 55, folio.top - 36, gather);
+        interlace(crestX, crestY, lerp(65, wide ? 26 : 19, gather), lerp(section(srcProgress, .08, .84), 1, gather), .80, Math.PI / 8);
+      }, 0);
+    }
+    function paperContour(folio, leaf, side, open, offset = 0, cover = false) {
+      const center = folio.center, edge = (side < 0 ? leaf.left : leaf.right) + side * offset;
+      const span = Math.abs(edge - center), xx = value => center + (value - center) * open;
+      const top = leaf.top + (cover ? 5 : offset * .35), bottom = leaf.bottom + offset;
+      const cut = cover ? 9 : 16;
+      ctx.beginPath(); ctx.moveTo(xx(center + side * 5), top + 10);
+      ctx.bezierCurveTo(xx(center + side * span * .20), top - 22, xx(edge - side * span * .20), top - 22, xx(edge), top - 7);
+      ctx.lineTo(xx(edge), bottom - cut);
+      ctx.lineTo(xx(edge - side * cut), bottom + 2);
+      ctx.bezierCurveTo(xx(edge - side * span * .30), bottom - 8, xx(center + side * span * .13), bottom - 8,
+        xx(center + side * 5), bottom + 12);
+      // The shallow concave inner contour is a binding gutter, not a dark
+      // gradient. Its negative paper channel keeps the entire spread flat.
+      ctx.bezierCurveTo(xx(center + side * 14), lerp(bottom, top, .33), xx(center + side * 14), lerp(bottom, top, .70),
+        xx(center + side * 5), top + 10);
+      ctx.closePath();
+    }
+    function codexCovers(folio) {
+      for (let index = 0; index < folio.leaves.length; index++) {
+        const leaf = folio.leaves[index], side = index ? 1 : -1;
+        const cover = smooth(section(bookAge, .48 + index * .045, 1.08 + index * .045));
+        if (cover > 0) {
+          paperContour(folio, leaf, side, cover, 16, true);
+          ctx.fillStyle = coverInk; ctx.fill(); ctx.strokeStyle = coverInk; ctx.lineWidth = 1.4; ctx.stroke();
+        }
+      }
+    }
+    function codexLeaves(folio) {
+      const { center, top, bottom, leaves } = folio;
       for (let index = 0; index < leaves.length; index++) {
         const leaf = leaves[index], side = index ? 1 : -1;
         const edge = index ? leaf.right : leaf.left;
-        const visibleEdge = lerp(center, edge, bookOpen);
-        const inner = index ? leaf.left : leaf.right;
-        const left = Math.min(center, visibleEdge), right = Math.max(center, visibleEdge);
-        ctx.save(); ctx.beginPath(); ctx.rect(left, leaf.top - 18, Math.max(0, right - left), leaf.bottom - leaf.top + 54); ctx.clip();
-        // Three offset outlines read as a stacked, engraved folio rather than a
-        // floating UI card. Their marks remain perfectly flat and unshaded.
-        for (let stack = 2; stack >= 0; stack--) {
-          const inset = stack * 3;
-          polygon([[center, leaf.top + inset], [edge, leaf.top + inset], [edge, leaf.bottom + 8 + inset],
-            [inner, leaf.bottom + 8 + inset], [center, leaf.bottom + 16 + inset]],
-            stack ? color.paper : color.white, .98, stack ? color.line : color.ink, stack ? .8 : 1.25);
+        // Covers lead, then three distinct sheets follow the same binding on
+        // delayed trajectories. No page is a clipping reveal of a rectangle.
+        for (let sheet = 0; sheet < 3; sheet++) {
+          const opening = smooth(section(bookAge, .72 + sheet * .13 + index * .035, 1.38 + sheet * .17 + index * .035));
+          if (opening <= 0) continue;
+          paperContour(folio, leaf, side, opening, (2 - sheet) * 4);
+          ctx.fillStyle = sheet === 2 ? color.white : sheet ? color.paper : color.faint;
+          ctx.fill(); ctx.strokeStyle = sheet === 2 ? color.ink : color.line; ctx.lineWidth = sheet === 2 ? 1.05 : .8; ctx.stroke();
         }
+        const opening = smooth(section(bookAge, .98 + index * .035, 1.72 + index * .035));
+        if (opening <= 0) continue;
+        ctx.save(); paperContour(folio, leaf, side, opening); ctx.clip();
         const margin = Math.min(18, (leaf.right - leaf.left) * .065);
-        line(leaf.left + margin, leaf.top + 12, leaf.right - margin, leaf.top + 12, accent, .73, .7);
-        line(leaf.left + margin, leaf.bottom - 10, leaf.right - margin, leaf.bottom - 10, color.line, .84, .7);
+        // Rules are drawn by moving their endpoints outward from the spine,
+        // preserving a common motion language with the arches they came from.
+        const inkLeft = lerp(center, leaf.left + margin, opening), inkRight = lerp(center, leaf.right - margin, opening);
+        line(inkLeft, leaf.top + 12, inkRight, leaf.top + 12, accent, .73, .7);
+        line(inkLeft, leaf.bottom - 10, inkRight, leaf.bottom - 10, color.line, .84, .7);
         for (const yy of [leaf.top + 12, leaf.bottom - 10]) {
-          diamond(leaf.left + margin, yy, 2.5, accent, .85);
-          diamond(leaf.right - margin, yy, 2.5, accent, .85);
+          diamond(inkLeft, yy, 2.5, accent, .85);
+          diamond(inkRight, yy, 2.5, accent, .85);
         }
-        const foreEdge = edge - side * 5;
-        line(foreEdge, leaf.top + 22, foreEdge, leaf.bottom - 20, color.line, .66, .7);
-        // Fore-edge notches and lower folio number stay outside all list ink.
+        const foreEdge = lerp(center, edge - side * 5, opening);
+        line(foreEdge, leaf.top + 22, foreEdge, leaf.bottom - 24, color.line, .66, .7);
         for (let etch = 0; etch < 9; etch++) {
           const yy = leaf.bottom - 24 - etch * 6;
-          line(edge, yy, edge - side * 3.5, yy - 2, accent, .62, .65);
+          const movingEdge = lerp(center, edge, opening);
+          line(movingEdge, yy, movingEdge - side * 3.5, yy - 2, accent, .62, .65);
         }
+        ctx.restore();
         type(index ? 'II' : 'I', (leaf.left + leaf.right) / 2, leaf.bottom + 27,
           12, color.ink, bookOpen, 1.5, 'center', true);
-        ctx.restore();
       }
-      // The binding stays anchored to the measured gutter through zoom/resize.
-      const bind = smooth(section(bookOpen, 0, .32));
-      line(center, top - 10, center, bottom + 23, color.ink, .94 * bind, 1.5);
-      line(center - 3, top + 5, center - 3, bottom + 11, accent, .45 * bind, .7);
-      line(center + 3, top + 5, center + 3, bottom + 11, accent, .45 * bind, .7);
-      for (const y of [top - 10, bottom + 23]) diamond(center, y, 5, accent, bind, false);
-      for (let stitch = 1; stitch <= 5; stitch++) {
-        const yy = lerp(top, bottom, stitch / 6);
-        trace([[center - 4, yy - 4], [center + 4, yy], [center - 4, yy + 4]], 1, color.ink, bind * .82, .85);
+      const ribbon = smooth(section(bookAge, 1.05, 1.95));
+      if (ribbon > 0) {
+        // A single cut ribbon drops through the real gutter; it is never laid
+        // over the skill or plugin columns. The forked tail stays planar.
+        const end = lerp(top + 12, bottom + 43, ribbon), left = center - 6, right = center + 6;
+        polygon([[left, top + 12], [right, top + 12], [right, end], [center, end - 7], [left, end]], accent, .94);
+        line(center, top + 14, center, end - 12, color.paper, .60, .8);
       }
-      return { center, top, bottom, leaves };
+      return folio;
     }
     function archiveScene(complete = false) {
       const box = bookBox || inventoryBox || { left: -W * .37, right: W * .37, top: atY(.38), bottom: atY(.80) };
       const exclusion = inventoryBox || box;
+      const folio = folioGeometry(box);
       outside([exclusion, headingBox], () => {
         // The open folio is carried intact from discovery into registration.
         // Both phases share the same locations and the persistent book clock.
-        floralMargins(3, bookOpen);
+        floralMargins(3, 1);
         page('IV', .045);
         const crestY = Math.min(atY(.25), box.top - 53);
         const crestX = bookBox ? bookGutter : (box.left + box.right) / 2;
-        radiantSeal(crestX, crestY, wide ? 88 : 57, bookOpen, .79);
         const railWidth = Math.min(W * .24, 280);
         for (const side of [-1, 1]) {
           const left = side < 0 ? crestX - railWidth - 114 : crestX + 114;
-          braid(left, crestY + 9, railWidth, bookOpen, .74);
+          braid(left, crestY + 9, railWidth, bookBuild, .74);
         }
         archiveRoutes(exclusion, complete);
       });
-      const folio = codexLeaves(box);
+      // The source ink lands on the unfolding cover, then the paper travels
+      // over its interior. Endbands and the outer engraved rims stay visible.
+      codexCovers(folio);
+      outside([headingBox], () => folioConstruction(folio), 8);
+      codexLeaves(folio);
       if (complete) {
         const arrival = reduced ? 1 : smooth(section(progress, .12, .75));
         const stampX = folio.leaves[1].right - 27, stampY = folio.bottom + 30;

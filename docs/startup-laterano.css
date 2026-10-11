@@ -26,8 +26,8 @@
 /* A measured, flat folio: reveal the real text outward from the shared spine.
    Clipping leaves DOM bounds fixed, so the canvas and pages never drift. */
 [data-visual-style=laterano] .inventory-phase .stage-copy{top:23%;max-width:78%}
-[data-visual-style=laterano] .inventory-panel{top:35%;bottom:14%;left:16%;right:16%;gap:18px;--book-open:1}
-[data-visual-style=laterano] .inventory-columns{gap:0;position:relative}
+[data-visual-style=laterano] .inventory-panel{top:35%;bottom:14%;left:16%;right:16%;gap:10px;--book-open:1}
+[data-visual-style=laterano] .inventory-columns{gap:0;position:relative;margin-bottom:4.7vmin}
 [data-visual-style=laterano] .inventory-column{position:relative;border:0;padding:34px 40px 32px}
 [data-visual-style=laterano] .inventory-column[data-page=left]{clip-path:inset(0 0 0 calc((1 - var(--book-open))*100%))}
 [data-visual-style=laterano] .inventory-column[data-page=right]{clip-path:inset(0 calc((1 - var(--book-open))*100%) 0 0)}
@@ -45,7 +45,7 @@
 @media(max-width:900px){[data-visual-style=laterano] .inventory-panel{left:10%;right:10%}[data-visual-style=laterano] .inventory-column{padding-inline:25px}[data-visual-style=laterano] .inventory-column:after{left:25px;right:25px}}
 @media(max-width:600px){
  [data-visual-style=laterano] .inventory-phase .stage-copy{top:25%;max-width:89%}
- [data-visual-style=laterano] .inventory-panel{left:7%;right:7%;top:38%;bottom:16%;gap:15px}
+ [data-visual-style=laterano] .inventory-panel{left:7%;right:7%;top:38%;bottom:16%;gap:8px}
  [data-visual-style=laterano] .inventory-column{padding:25px 12px 28px}
  [data-visual-style=laterano] .inventory-column:after{left:12px;right:12px;font-size:7px;letter-spacing:.12em}
  [data-visual-style=laterano] .inventory-heading{padding-bottom:9px;margin-bottom:11px}

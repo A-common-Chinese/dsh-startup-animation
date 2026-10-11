@@ -31,7 +31,7 @@ let layoutDirty=true,sceneLayout={identity:null,inventory:null};
 let soundTouched=false,soundInitialized=false;
 let audio=null,master=null,audioSources=[],audioUnavailable=false;
 let phaseAge=0,visiblePhase=-1,starting=false;
-let scenePhase=-1,paintedPhase=-1,sceneAge=0,bookAge=0,transitionAge=1;
+let scenePhase=-1,paintedPhase=-1,paintedProgress=0,sceneAge=0,bookAge=0,bookSource=null,transitionAge=1;
 const smoothStep=value=>{const t=Math.max(0,Math.min(1,value));return t*t*(3-2*t);};
 const entryAnimations=new Map();
 let raf=0,lastFrame=0,generation=0,ambientTime=0,impulse=0,drag=0,manualPause=false,signature='',pointer={x:.5,y:.5},pointerDown=null,embeddedEnded=false;
@@ -141,11 +141,17 @@ function measureSceneLayout(){
  }
 }
 function clearTransition(){transitionAge=1;transitionCanvas.style.opacity='0';}
-function resetSceneMotion(){clearTransition();scenePhase=-1;paintedPhase=-1;sceneAge=0;bookAge=0;}
+function resetSceneMotion(){clearTransition();scenePhase=-1;paintedPhase=-1;sceneAge=0;bookAge=0;bookSource=null;}
 function beginScene(){
  if(scenePhase===sequence.phase)return;
  const continuingBook=visualStyle==='laterano'&&scenePhase===3&&sequence.phase===4;
- if(visualStyle==='laterano'&&paintedPhase===scenePhase&&scenePhase>=0&&!continuingBook&&!manualPause&&!reducedMotion.matches&&transitionCtx){
+ const bindingBook=visualStyle==='laterano'&&scenePhase===2&&sequence.phase===3;
+ if(bindingBook&&paintedPhase===2){
+  // Retain vector geometry, not a raster screenshot: the measured portal is
+  // recomposed into the binding and cover by the incoming folio renderer.
+  bookSource={phase:2,layout:sceneLayout,viewport:{width,height},progress:paintedProgress};
+ }else if(!continuingBook)bookSource=null;
+ if(visualStyle==='laterano'&&paintedPhase===scenePhase&&scenePhase>=0&&!continuingBook&&!bindingBook&&!manualPause&&!reducedMotion.matches&&transitionCtx){
   transitionCanvas.width=canvas.width;transitionCanvas.height=canvas.height;
   transitionCtx.setTransform(1,0,0,1,0,0);transitionCtx.clearRect(0,0,canvas.width,canvas.height);transitionCtx.drawImage(canvas,0,0);
   transitionAge=0;transitionCanvas.style.opacity='1';
@@ -162,13 +168,13 @@ function drawScene(){
  if(layoutDirty)measureSceneLayout();
  const laterano=visualStyle==='laterano',inBook=sequence.phase===3||sequence.phase===4;
  const visualProgress=reducedMotion.matches?1:Math.max(sequence.progress,Math.min(1,sceneAge/1.65));
- const bookOpen=reducedMotion.matches?1:smoothStep(bookAge/1.1);
+ const bookOpen=reducedMotion.matches?1:smoothStep((bookAge-1.35)/.67);
  ui.inventoryPanel.style.setProperty('--book-open',String(laterano?bookOpen:1));
  transitionCanvas.style.opacity=String(laterano&&!reducedMotion.matches?1-smoothStep(transitionAge/.6):0);
  ctx.setTransform(dpr,0,0,dpr,0,0);
  const renderer=laterano&&window.DSHLateranoVisuals?window.DSHLateranoVisuals:DSHVisuals;
- renderer.draw(ctx,width,height,{phase:sequence.phase,progress:sequence.progress,visualProgress:laterano?visualProgress:undefined,bookOpen:laterano?bookOpen:undefined,time:sequence.time,textAge:laterano?(inBook?bookAge:sceneAge):manualPause?sequence.elapsed:Math.max(sequence.elapsed,phaseAge),choice:sequence.choices[Math.min(4,sequence.phase)]||0,light,reducedMotion:reducedMotion.matches,pointer,ambientTime,impulse,drag,waiting:sequence.waiting,identity:ui.identityName.value.trim()||local.profile.username,inventory:local.inventory,layout:sceneLayout});
- paintedPhase=sequence.phase;
+ renderer.draw(ctx,width,height,{phase:sequence.phase,progress:sequence.progress,visualProgress:laterano?visualProgress:undefined,bookAge:laterano?bookAge:undefined,bookSource:laterano?bookSource:undefined,bookOpen:laterano?bookOpen:undefined,time:sequence.time,textAge:laterano?(inBook?bookAge:sceneAge):manualPause?sequence.elapsed:Math.max(sequence.elapsed,phaseAge),choice:sequence.choices[Math.min(4,sequence.phase)]||0,light,reducedMotion:reducedMotion.matches,pointer,ambientTime,impulse,drag,waiting:sequence.waiting,identity:ui.identityName.value.trim()||local.profile.username,inventory:local.inventory,layout:sceneLayout});
+ paintedPhase=sequence.phase;paintedProgress=visualProgress;
 }
 function applyVisualStyle(value){
   const next=value==='laterano'?'laterano':'rhine';
