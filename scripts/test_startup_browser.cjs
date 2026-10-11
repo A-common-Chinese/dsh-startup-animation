@@ -38,6 +38,7 @@ function classList() {
   return {
     add: value => values.add(value),
     remove: value => values.delete(value),
+    contains: value => values.has(value),
     toggle(value, force) {
       const enabled = force ?? !values.has(value);
       if (enabled) values.add(value); else values.delete(value);
@@ -60,6 +61,7 @@ function createHarness(options = {}) {
   const pendingAudio = [];
   const requests = [];
   const messages = [];
+  const canvasCalls = [];
   let generatedNode = 0;
   async function request(url, init = {}) {
     requests.push({ url, ...init });
@@ -77,15 +79,31 @@ function createHarness(options = {}) {
         id,
         hidden: id === 'controlPanel',
         value: id === 'identityName' ? 'OPERATOR' : id === 'identityId' ? 'DSH-0001' : '',
-        textContent: '', style: { setProperty(name, value) { this[name] = value; } }, classList: classList(), attributes: new Map(),
+        textContent: '', dataset: {}, style: { setProperty(name, value) { this[name] = value; } }, classList: classList(), attributes: new Map(),
         captures: new Set(),
         children: [],
         appendChild(child) { this.children.push(child); return child; },
         replaceChildren(...children) { this._text = ''; this.children = children; },
         setAttribute(name, value) { this.attributes.set(name, value); },
+        removeAttribute(name) { this.attributes.delete(name); },
         getAttribute(name) { return this.attributes.get(name); },
-        getBoundingClientRect() { return { left: 0, top: 0, width: 1000, height: 800 }; },
-        getContext() { return { setTransform() {} }; },
+        getBoundingClientRect() {
+          const r = options.rectangles?.[id] || { left: 0, top: 0, width: 1000, height: 800 };
+          return { ...r, right: r.left + r.width, bottom: r.top + r.height };
+        },
+        getContext() {
+          if (!this.context) {
+            const stack = [];
+            this.context = { globalAlpha: 1,
+              save() { stack.push(this.globalAlpha); },
+              restore() { assert.ok(stack.length, 'host canvas restore must have a matching save'); this.globalAlpha = stack.pop(); },
+            };
+            for (const op of ['setTransform', 'clearRect', 'drawImage']) this.context[op] = (...args) => {
+              canvasCalls.push({ canvas: id, op, args, alpha: this.context.globalAlpha });
+            };
+          }
+          return this.context;
+        },
         closest() { return null; },
         focus() { document.activeElement = this; },
         setPointerCapture(id) { this.captures.add(id); },
@@ -100,6 +118,11 @@ function createHarness(options = {}) {
         get() { return (this._text || '') + this.children.map(child => child.textContent).join(''); },
         set(value) { this._text = String(value); this.children = []; },
       });
+      for (const [property, field] of [['offsetLeft', 'left'], ['offsetTop', 'top'], ['offsetWidth', 'width'], ['offsetHeight', 'height']]) {
+        Object.defineProperty(node, property, { get() {
+          return (options.offsets?.[id] || options.rectangles?.[id] || { left: 0, top: 0, width: 1000, height: 800 })[field];
+        } });
+      }
       elements.set(id, node);
     }
     return elements.get(id);
@@ -147,7 +170,7 @@ function createHarness(options = {}) {
     hidden: false, activeElement: null,
     getElementById: id => htmlIds.has(id) ? element(id) : null,
     createElement: tag => { const node = element('generated-' + (++generatedNode)); node.tagName = tag.toUpperCase(); return node; },
-    querySelectorAll: () => [],
+    querySelectorAll: selector => (options.selectors?.[selector] || []).map(element),
     body: { classList: classList() }, documentElement: { dataset: {} },
   });
   const windowEvents = new EventTargetStub();
@@ -173,7 +196,7 @@ function createHarness(options = {}) {
   }
 
   return {
-    element, document, windowEvents, frames, contexts, sources, animations, drawStates, requests, messages,
+    element, document, windowEvents, frames, contexts, sources, animations, drawStates, requests, messages, canvasCalls,
     releaseAudio() { pendingAudio.splice(0).forEach(resolve => resolve()); },
     tap() {
       const stage = element('experience');
@@ -686,7 +709,152 @@ async function main() {
   const lockedTheme=createHarness({accessFetch:async()=>jsonResponse({...accessStatus(),unlocked:false,profile:{...accessStatus().profile,visual_style:'laterano'}})});await settle();
   assert.equal(lockedTheme.document.documentElement.dataset.visualStyle,'laterano','the password gate must already use the saved style');
   assert.equal(lockedTheme.requests.filter(item=>item.url==='/api/profile').length,0);
-  console.log('PASS: startup lifecycle, real inventory, voice, access barriers, persisted styles, failed saves and verified embedded handshake.');
+
+  const lateranoFetch = stream => async url => {
+    if (url === '/api/profile') return jsonResponse({ ...profileFixture, visual_style: 'laterano', sound: false });
+    if (url === '/api/load') return stream.response;
+    return jsonResponse({ message: 'Not found' }, 404);
+  };
+  // Waiting is a playback gate, not a second animation clock. Confirming a
+  // partly composed scene must preserve its pose; explicit seeks still rewind.
+  const smoothGate = createHarness({ fetch: lateranoFetch(ndjsonStream()) }); await settle();
+  smoothGate.frame(701);
+  const waitingPose = smoothGate.drawStates.at(-1);
+  assert.equal(waitingPose.waiting, true);
+  assert.ok(waitingPose.visualProgress > 0 && waitingPose.visualProgress < 1);
+  smoothGate.tap(); await settle();
+  assert.equal(smoothGate.drawStates.at(-1).visualProgress, waitingPose.visualProgress, 'starting a waiting scene must preserve its partially composed geometry');
+  smoothGate.frame(1101);
+  assert.ok(smoothGate.drawStates.at(-1).visualProgress >= waitingPose.visualProgress);
+  smoothGate.frame(6701); smoothGate.frame(7301);
+  assert.equal(smoothGate.drawStates.at(-1).phase, 2);
+  const gatePose = smoothGate.drawStates.at(-1).visualProgress;
+  smoothGate.tap(); await settle();
+  assert.equal(smoothGate.drawStates.at(-1).visualProgress, gatePose, 'identity confirmation must not reassemble the portal from zero');
+  smoothGate.element('play').emit('click');
+  const pausedPose = smoothGate.drawStates.at(-1).visualProgress;
+  smoothGate.frame(7701);
+  assert.equal(smoothGate.drawStates.at(-1).visualProgress, pausedPose, 'manual pause must freeze the geometric clock');
+  smoothGate.element('seek').value = '7.8'; smoothGate.element('seek').emit('input');
+  assert.ok(Math.abs(smoothGate.drawStates.at(-1).visualProgress - .5) < 1e-9, 'a seek to the midpoint must display the actual midpoint pose');
+  smoothGate.element('seek').value = '6.36'; smoothGate.element('seek').emit('input');
+  assert.ok(Math.abs(smoothGate.drawStates.at(-1).visualProgress - .1) < 1e-9, 'an explicit backward seek must be able to rewind the geometry');
+  smoothGate.element('replay').emit('click');
+  assert.equal(smoothGate.drawStates.at(-1).visualProgress, 0, 'replay starts a fresh construction');
+
+  // These are independently measured DOM rectangles in a nonzero pane origin.
+  // A slight gap and unequal leaf widths prevent a guessed screen-center spine
+  // from satisfying the same assertions as the real page layout.
+  const bookStream = ndjsonStream();
+  let book;
+  // Model flex reflow at the actual DOM mutation: revealing the real issue
+  // message shortens both leaves, while the outer panel keeps the same size.
+  const leafHeight = () => book && !book.element('inventoryIssues').hidden ? 238 : 260;
+  book = createHarness({ fetch: lateranoFetch(bookStream),
+    selectors: { '.inventory-column': ['skillsPage', 'pluginsPage'] },
+    rectangles: {
+      canvasPane: { left: 47, top: 31, width: 1280, height: 720 },
+      stageCopy: { left: 290, top: 125, width: 700, height: 130 },
+      inventoryPanel: { left: 230, top: 330, width: 924, height: 314 },
+      inventoryBook: { left: 230, top: 330, width: 924, get height() { return leafHeight(); } },
+      skillsPage: { left: 230, top: 330, width: 438, get height() { return leafHeight(); } },
+      pluginsPage: { left: 688, top: 330, width: 466, get height() { return leafHeight(); } },
+    },
+  }); await settle();
+  book.element('seek').value = '9.6'; book.element('seek').emit('input');
+  assert.equal(book.drawStates.at(-1).bookOpen, 0);
+  assert.deepEqual(JSON.parse(JSON.stringify(book.drawStates.at(-1).layout.book)), {
+    x: 183, y: 299, width: 924, height: 260, gutterX: 631, spread: true,
+    left: { x: 183, y: 299, width: 438, height: 260 }, right: { x: 641, y: 299, width: 466, height: 260 },
+  }, 'folio bounds and spine must derive from actual DOM leaves relative to the canvas pane');
+  book.tap(); await settle(); book.frame(401);
+  const readingPose = book.drawStates.at(-1);
+  assert.equal(readingPose.phase, 3);
+  assert.ok(readingPose.bookOpen > 0 && readingPose.bookOpen < 1);
+  assert.equal(Number(book.element('inventoryPanel').style['--book-open']), readingPose.bookOpen,
+    'CSS text reveal and canvas folio must receive the same eased opening value');
+  bookStream.event({ ...inventoryFixture, issues: [{ name: 'actual-file-issue', message: 'The local host returned this real issue.' }] });
+  bookStream.close(); await settle(); await settle();
+  const arrivedPose = book.drawStates.at(-1);
+  assert.equal(arrivedPose.inventory.status, 'complete');
+  assert.equal(arrivedPose.bookOpen, readingPose.bookOpen, 'a fast real result must not close or snap open a still-opening folio');
+  assert.equal(arrivedPose.visualProgress, readingPose.visualProgress, 'changing the result heading must not restart the geometric scene');
+  assert.equal(arrivedPose.textAge, readingPose.textAge, 'the book clock must survive true inventory and heading updates');
+  assert.equal(book.element('inventoryIssues').hidden, false);
+  assert.equal(arrivedPose.layout.inventory.height, 314, 'the outer panel need not resize when an issue appears');
+  assert.equal(arrivedPose.layout.book.height, 238, 'the folio must remeasure after the real issue message compresses its flex area');
+  assert.equal(arrivedPose.layout.book.left.height, 238);
+  assert.equal(arrivedPose.layout.book.right.height, 238, 'both leaf baselines must follow the new measured height');
+  book.frame(1501);
+  const originalSkillRow = book.element('skillsList').children[0];
+  assert.equal(originalSkillRow.children[0].getAttribute('data-lettering'), 'settled');
+  const copiesBeforeRegistration = book.canvasCalls.filter(call => call.op === 'drawImage').length;
+  book.frame(5001);
+  assert.equal(book.drawStates.at(-1).phase, 4);
+  assert.equal(book.drawStates.at(-1).waiting, true);
+  assert.equal(book.drawStates.at(-1).bookOpen, 1, 'registration must retain the already opened folio');
+  assert.equal(book.canvasCalls.filter(call => call.op === 'drawImage').length, copiesBeforeRegistration,
+    'discovery to registration is the same open book, not an overlapping whole-page snapshot');
+  assert.equal(book.element('skillsList').children[0], originalSkillRow, 'the real inventory rows must be carried into registration');
+  assert.equal(originalSkillRow.children[0].getAttribute('data-lettering'), 'settled', 'carried inventory names must not roll again at the chapter boundary');
+
+  // Other chapters retain their last painted frame and blend it away, while
+  // explicit playback controls never leave an old layer over the selected pose.
+  book.tap(); await settle(); book.frame(7901);
+  assert.equal(book.drawStates.at(-1).phase, 5);
+  assert.ok(book.canvasCalls.some(call => call.canvas === 'sceneTransition' && call.op === 'drawImage' && call.args[0] === book.element('scene')),
+    'ordinary chapter changes must capture the actual outgoing canvas');
+  assert.equal(Number(book.element('sceneTransition').style.opacity), 1);
+  book.frame(8201);
+  assert.ok(Number(book.element('sceneTransition').style.opacity) > 0 && Number(book.element('sceneTransition').style.opacity) < 1,
+    'the outgoing frame must fade continuously through the middle of the transition');
+  book.frame(8502);
+  assert.equal(Number(book.element('sceneTransition').style.opacity), 0, 'the outgoing frame must be gone after 600ms');
+  book.element('seek').value = '3.39'; book.element('seek').emit('input');
+  book.tap(); await settle(); book.frame(8522);
+  assert.ok(Number(book.element('sceneTransition').style.opacity) > 0);
+  book.element('play').emit('click');
+  assert.equal(Number(book.element('sceneTransition').style.opacity), 0, 'pausing must clear the previous chapter overlay');
+  book.element('seek').value = '3.39'; book.element('seek').emit('input');
+  book.tap(); await settle(); book.frame(8542);
+  assert.ok(Number(book.element('sceneTransition').style.opacity) > 0);
+  book.element('seek').value = '6.3'; book.element('seek').emit('input');
+  assert.equal(Number(book.element('sceneTransition').style.opacity), 0, 'seeking must display its exact pose without a stale transition');
+  book.element('seek').value = '3.39'; book.element('seek').emit('input');
+  book.tap(); await settle(); book.frame(8562);
+  assert.ok(Number(book.element('sceneTransition').style.opacity) > 0);
+  book.windowEvents.emit('pagehide');
+  assert.equal(Number(book.element('sceneTransition').style.opacity), 0, 'pagehide must discard an in-progress outgoing layer before caching the page');
+  book.windowEvents.emit('pageshow', { persisted: true }); await settle(); book.frame(8762);
+  assert.equal(Number(book.element('sceneTransition').style.opacity), 0, 'restoring a paused cached page must not retain a frozen translucent old scene');
+
+  const stillBook = createHarness({ reducedMotion: true, fetch: lateranoFetch(ndjsonStream()) }); await settle();
+  stillBook.element('seek').value = '9.6'; stillBook.element('seek').emit('input');
+  assert.equal(stillBook.drawStates.at(-1).visualProgress, 1);
+  assert.equal(stillBook.drawStates.at(-1).bookOpen, 1, 'reduced motion must show the readable open spread immediately');
+  assert.equal(Number(stillBook.element('inventoryPanel').style['--book-open']), 1);
+  assert.equal(Number(stillBook.element('sceneTransition').style.opacity), 0);
+  assert.equal(stillBook.canvasCalls.filter(call => call.op === 'drawImage').length, 0, 'reduced motion must never capture animated outgoing layers');
+
+  // Half speed must slow the same book clock that drives the actual leaf mask.
+  // Compare matching playback time, rather than duplicating its easing formula.
+  const normalStream = ndjsonStream(), halfStream = ndjsonStream();
+  const normalSpeed = createHarness({ fetch: lateranoFetch(normalStream) });
+  const halfSpeed = createHarness({ fetch: lateranoFetch(halfStream) }); await settle();
+  for (const harness of [normalSpeed, halfSpeed]) {
+    harness.element('seek').value = '9.6'; harness.element('seek').emit('input');
+  }
+  halfSpeed.element('speed').value = '.5'; halfSpeed.element('speed').emit('change');
+  normalSpeed.tap(); halfSpeed.tap(); await settle();
+  normalSpeed.frame(401); halfSpeed.frame(801);
+  assert.equal(halfSpeed.drawStates.at(-1).bookOpen, normalSpeed.drawStates.at(-1).bookOpen,
+    'half speed over twice the wall time must reach the same page-opening pose');
+  normalSpeed.frame(801);
+  assert.ok(halfSpeed.drawStates.at(-1).bookOpen < normalSpeed.drawStates.at(-1).bookOpen,
+    'half speed must not finish the folio at normal-speed wall time');
+  normalSpeed.windowEvents.emit('pagehide'); halfSpeed.windowEvents.emit('pagehide');
+  normalStream.close(); halfStream.close(); await settle();
+  console.log('PASS: startup lifecycle, real inventory, voice/access barriers, persisted styles, measured center-opening folio, uninterrupted scene clocks, continuous transitions and reduced motion.');
 }
 
 main().catch(error => { console.error(error); process.exitCode = 1; });

@@ -17,8 +17,9 @@
   function draw(ctx, width, height, state = {}) {
     if (!ctx || !Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return;
     const phase = clamp(Math.floor(finite(state.phase)), 0, 5);
-    const reduced = !!state.reducedMotion, resting = reduced || !!state.waiting;
-    const progress = resting ? 1 : clamp(finite(state.progress));
+    const reduced = !!state.reducedMotion, visualClock = Number.isFinite(state.visualProgress);
+    const resting = reduced || !!state.waiting && !visualClock;
+    const progress = resting ? 1 : clamp(visualClock ? state.visualProgress : finite(state.progress));
     const ambient = reduced ? 0 : finite(state.ambientTime, finite(state.time));
     const drag = reduced ? 0 : finite(typeof state.drag === 'object' ? state.drag?.x : state.drag);
     const impulse = reduced ? 0 : clamp(finite(state.impulse));
@@ -59,6 +60,10 @@
     }
     const identityBox = measured(state.layout?.identity);
     const inventoryBox = measured(state.layout?.inventory);
+    const bookBox = measured(state.layout?.book);
+    const bookLeft = measured(state.layout?.book?.left), bookRight = measured(state.layout?.book?.right);
+    const bookGutter = Number.isFinite(state.layout?.book?.gutterX) ? (state.layout.book.gutterX - width / 2) / unit : 0;
+    const bookOpen = reduced ? 1 : Number.isFinite(state.bookOpen) ? clamp(state.bookOpen) : ease(section(progress, .10, .75));
     // Measured cards and headings are authoritative. The secondary corridor is
     // only a fallback for standalone renderers without DOM measurements.
     const headingBox = measured(state.layout?.heading) || (phase === 1 ? { left: -W * .34, right: W * .34, top: atY(.29), bottom: atY(.47) } :
@@ -225,7 +230,7 @@
       const q = index => resting ? 1 : ease(section(amount, .055 + index * .055, .43 + index * .065));
       ctx.save(); ctx.translate(x, y); ctx.rotate(angle); ctx.scale(scale, scale);
       for (const side of [-1, 1]) {
-        const open = q(side < 0 ? 1 : 2);
+        const open = q(1);
         if (open <= 0) continue;
         ctx.save(); ctx.scale(side, 1); ctx.translate((1 - open) * 68, (1 - open) * 40);
         ctx.rotate((1 - open) * .34); ctx.globalAlpha = alpha * open; ctx.fillStyle = ink;
@@ -317,58 +322,140 @@
       }
       ctx.restore();
     }
+    function radiantSeal(x, y, radius, amount = 1, alpha = 1) {
+      // An engraved sun: alternating pointed rays and four cardinal plates.
+      // Its angular silhouette is deliberately different from the circle study.
+      const reveal = resting ? 1 : smooth(section(amount, .12, .66));
+      ctx.save(); ctx.translate(x, y);
+      for (let index = 0; index < 24; index++) {
+        const arrival = resting ? 1 : smooth(section(amount, .08 + index % 6 * .024, .48 + index % 6 * .032));
+        const angle = index * TAU / 24 - Math.PI / 2;
+        const inner = radius * .46, outer = radius * (index % 3 ? .79 : 1);
+        const tip = lerp(inner, outer, arrival), broad = index % 3 ? 2 : 5.2;
+        ctx.save(); ctx.rotate(angle);
+        polygon([[inner, -broad], [tip, 0], [inner, broad], [inner * .9, 0]],
+          index % 3 ? accent : color.ink, alpha * arrival);
+        ctx.restore();
+      }
+      diamond(0, 0, radius * .29, accent, alpha * reveal, false);
+      diamond(0, 0, radius * .12, color.ink, alpha * reveal);
+      for (const side of [-1, 1]) {
+        line(side * radius * .15, 0, side * radius * .39, 0, accent, alpha * reveal, 1.3);
+        line(0, side * radius * .15, 0, side * radius * .39, accent, alpha * reveal, 1.3);
+      }
+      ctx.restore();
+    }
+    function braid(x, y, length, amount = 1, alpha = 1, vertical = false) {
+      // A two-strand, square-ended manuscript knot. Paper knockouts alternate
+      // at every crossing, giving it over/under structure without any shading.
+      const reveal = resting ? 1 : smooth(section(amount, .15, .78));
+      if (reveal <= 0 || length <= 0) return;
+      const cells = Math.max(2, Math.min(10, Math.round(length / 47))), step = length / cells;
+      ctx.save(); ctx.translate(x, y); if (vertical) ctx.rotate(Math.PI / 2);
+      ctx.beginPath(); ctx.rect(0, -13, length * reveal, 26); ctx.clip();
+      for (let strand = 0; strand < 2; strand++) {
+        const points = [];
+        for (let i = 0; i <= cells * 2; i++) points.push([i * step / 2, Math.sin(i * Math.PI / 2 + strand * Math.PI) * 8]);
+        trace(points, 1, strand ? color.ink : accent, alpha, 1.45);
+      }
+      for (let i = 1; i < cells; i++) {
+        const xx = i * step, rise = i % 2 ? 1 : -1;
+        line(xx - 5, rise * -2.3, xx + 5, rise * 2.3, color.paper, alpha, 5);
+        line(xx - 5, rise * -2.3, xx + 5, rise * 2.3, i % 2 ? color.ink : accent, alpha, 1.45);
+      }
+      diamond(0, 0, 3, color.ink, alpha); diamond(length, 0, 3, color.ink, alpha);
+      ctx.restore();
+    }
+    function triptych(x, y, span, height, amount = 1, alpha = 1) {
+      // Three lancets share a baseline. The central window rises above its
+      // neighbours, with a cut diamond and engraved fan instead of more flowers.
+      const half = span / 7.3, base = y + height / 2;
+      for (let index = -1; index <= 1; index++) {
+        const xx = x + index * span * .34, top = y - height * (index ? .31 : .50);
+        const spring = top + ROOT3 * half;
+        const arrival = resting ? 1 : ease(section(amount, .09 + (index + 1) * .065, .59 + (index + 1) * .065));
+        ctx.save(); ctx.beginPath(); ctx.rect(xx - half - 5, base - height * 1.12 * arrival, half * 2 + 10, height * 1.12); ctx.clip();
+        ctx.beginPath(); ctx.moveTo(xx - half, base); ctx.lineTo(xx - half, spring);
+        ctx.arc(xx + half, spring, half * 2, Math.PI, Math.PI + Math.PI / 3);
+        ctx.arc(xx - half, spring, half * 2, Math.PI * 5 / 3, TAU);
+        ctx.lineTo(xx + half, base); ctx.closePath(); ctx.fillStyle = index ? color.ink : accent;
+        ctx.globalAlpha = alpha * .93; ctx.fill(); ctx.globalAlpha = 1;
+        for (let rib = 1; rib <= 3; rib++) {
+          line(xx, top + 16, xx + (rib - 2) * half * .60, base - 12, color.paper, alpha * .68, .75);
+        }
+        diamond(xx, spring + Math.max(10, (base - spring) * .26), Math.max(4, half * .28), color.paper, alpha);
+        line(xx - half * .57, base - 15, xx + half * .57, base - 15, color.paper, alpha * .8, .8);
+        ctx.restore();
+        pointedArch(xx, spring, half + 5, base + 6, arrival, alpha * .70, .8, accent);
+      }
+      const arrival = resting ? 1 : smooth(section(amount, .31, .77));
+      line(x - span * .54, base + 7, x + span * .54, base + 7, color.ink, alpha * arrival, 2.1);
+      line(x - span * .60, base + 13, x + span * .60, base + 13, accent, alpha * arrival, .8);
+    }
+    function engravedCorner(x, y, direction = 1, amount = 1, alpha = 1) {
+      const q = resting ? 1 : smooth(section(amount, .10, .60));
+      ctx.save(); ctx.translate(x, y); ctx.scale(direction, 1);
+      polygon([[0, 0], [74 * q, 0], [74 * q, 9], [9, 9], [9, 65 * q], [0, 65 * q]], color.ink, alpha);
+      for (let i = 0; i < 8; i++) {
+        const start = 15 + i * 7;
+        line(start, 17, start - 8, 25, accent, alpha * q, .75);
+      }
+      trace([[17, 34], [34, 17], [51, 34], [34, 51], [17, 34]], q, accent, alpha * .78, 1);
+      diamond(34, 34, 3, color.ink, alpha * q);
+      ctx.restore();
+    }
     function patternedPanel(x, y, panelWidth, panelHeight, amount = 1, reverse = false) {
       const open = resting ? 1 : ease(section(amount, .20, .62));
       if (open <= 0) return;
       ctx.save(); ctx.translate(x, y);
       ctx.beginPath(); ctx.rect(-panelWidth / 2, -panelHeight / 2, panelWidth, panelHeight * open); ctx.clip();
       rect(-panelWidth / 2, -panelHeight / 2, panelWidth, panelHeight, color.ink, .94);
-      const rows = 4, step = panelHeight / rows, radius = Math.min(panelWidth * .25, step * .34);
+      const rows = 6, step = panelHeight / rows, radius = panelWidth * .29;
       for (let row = 0; row < rows; row++) {
         const cy = -panelHeight / 2 + step * (row + .5);
-        quatrefoil(0, cy, radius, section(amount, .21 + row * .045, .75 + row * .04), color.paper, .9, true, reverse ? Math.PI / 4 : 0);
-        if (row < rows - 1) diamond(0, cy + step / 2, 2.5, color.paper, .65);
+        const arrival = resting ? 1 : smooth(section(amount, .18 + row * .045, .63 + row * .04));
+        // Alternating nested lozenges and engraved chevrons form a woven strip.
+        if (row % 2) {
+          diamond(0, cy, radius, color.paper, arrival * .92, false);
+          diamond(0, cy, radius * .40, color.paper, arrival * .92);
+        } else {
+          for (let lineIndex = 0; lineIndex < 3; lineIndex++) {
+            const offset = (lineIndex - 1) * 5;
+            trace([[-radius, cy - 5 + offset], [0, cy + 6 + offset], [radius, cy - 5 + offset]],
+              arrival, color.paper, .82, .8);
+          }
+        }
       }
       line(-panelWidth / 2 + 5, -panelHeight / 2, -panelWidth / 2 + 5, panelHeight / 2, color.paper, .65, .8);
       line(panelWidth / 2 - 5, -panelHeight / 2, panelWidth / 2 - 5, panelHeight / 2, color.paper, .65, .8);
       ctx.restore();
     }
-    function floralMargins(variant = 0) {
-      // Cropped botanical anchors carry black mass. Their repeatable cutwork
-      // is reused as gate capitals and page edges, not unrelated decorations.
-      const swap = variant % 2 === 1, offset = variant === 5 ? .045 : 0;
-      const leftX = -W * (wide ? .493 : .58), rightX = W * (wide ? .478 : .58);
-      iris(leftX, atY(swap ? .31 : .65), wide ? 2.05 : 1.72, progress, color.ink, .92, swap ? Math.PI : -.12);
-      iris(rightX, atY(swap ? .68 : .235) + offset * H, wide ? 1.80 : 1.67, section(progress, .06, .90), color.ink, .94, swap ? .12 : Math.PI);
+    function floralMargins(variant = 0, amount = progress) {
+      // One upright iris is the botanical signature. All other marginalia use
+      // architectural and engraved geometry, so the page never becomes floral wallpaper.
+      const book = variant === 3 || variant === 4;
+      // Reserve the same right margin on every movement. Its width follows the
+      // shared folio breakpoints, with the measured page as the final authority.
+      // The complete +/-109 petal silhouette must fit both the page and screen.
+      const pageEdge = width >= 1600 ? .80 : width > 900 ? .84 : width > 600 ? .90 : .93;
+      const flowerLeft = Math.max((pageEdge - .5) * W, bookBox?.right ?? -W / 2) + 15;
+      const flowerRight = W / 2 - 14;
+      const flowerX = wide ? (flowerLeft + flowerRight) / 2 : W * .31;
+      const flowerScale = wide ? Math.min(1.45, Math.max(.08, (flowerRight - flowerLeft) / 218)) :
+        .72 * Math.min(1, height / 844);
+      iris(flowerX, atY(wide ? .51 : .14), flowerScale,
+        section(amount, .04, .92), color.ink, .94, 0);
       if (wide) {
-        const panelSide = swap ? -1 : 1;
-        patternedPanel(panelSide * W * .438, atY(swap ? .68 : .64), 82, 212,
-          section(progress, .10, .94), swap);
-        // The upper-left rosette starts below the masthead's brand metadata.
-        interlace(-panelSide * W * .421, atY(swap ? .69 : .365), 99,
-          section(progress, .04, .90), .64, Math.PI / 8);
+        const left = -W * .437;
+        triptych(left, atY(book ? .59 : .47), 145, 219, section(amount, .02, .88), .86);
+        patternedPanel(W * .445, atY(book ? .745 : .754), 63, 152, section(amount, .12, .92));
+        radiantSeal(left, atY(.29), 53, section(amount, .08, .93), .86);
+        braid(left - 70, atY(.733), 141, section(amount, .24, .97), .85);
+        engravedCorner(-W * .37, atY(.18), 1, section(amount, .08, .96), .74);
+        engravedCorner(W * .37, atY(.775), -1, section(amount, .21, .98), .62);
       } else {
-        for (const side of [-1, 1]) quatrefoil(side * W * .435, atY(.765), 31,
-          section(progress, .25, .95), accent, .75, true);
-      }
-    }
-    function knife(amount, left = true, strength = 1) {
-      if (resting || amount <= 0 || amount >= 1) return;
-      // One decisive black cut between construction and ink, then a long hold.
-      const q = ease(amount), side = left ? 1 : -1;
-      const x = side * lerp(-W * .78, W * .78, q), thickness = 48 * Math.sin(Math.PI * amount);
-      ctx.save(); ctx.transform(1, 0, -.40, 1, 0, 0);
-      rect(x - thickness / 2, -H * .6, thickness, H * 1.2, color.ink, strength);
-      rect(x + thickness / 2 + 7, -H * .6, 2, H * 1.2, accent, strength * .8);
-      ctx.restore();
-    }
-    function doorPlanes(box, amount) {
-      const open = ease(section(amount, .48, .78)), alpha = resting ? 0 : 1 - smooth(section(amount, .65, .82));
-      if (alpha <= 0) return;
-      for (const side of [-1, 1]) {
-        const hinge = (side < 0 ? box.left : box.right) + side * open * W * .48, outer = side * W * .68;
-        polygon([[hinge, box.top - 160], [outer, box.top - 330], [outer, box.bottom + 130], [hinge, box.bottom + 45]], color.ink, alpha * .91);
-        line(hinge, box.top - 160, hinge, box.bottom + 45, accent, alpha, 4);
+        radiantSeal(-W * .367, atY(.717), 43, section(amount, .08, .93), .90);
+        braid(-W * .31, atY(.797), W * .62, section(amount, .25, .96), .78);
       }
     }
     function rowRegistration(box) {
@@ -426,7 +513,6 @@
         type('AC = BC', x, y + ROOT3 * radius / 2 + 32, 12, accent, ink, 1.5, 'center', true);
         quatrefoil(textX + 322, ruleY + 86, 25, section(progress, .38, .93), color.ink, .92, true);
       }
-      knife(section(progress, .38, .54), true, .84);
     }
     function linkScene() {
       outside([headingBox], () => {
@@ -443,13 +529,12 @@
           type(side < 0 ? 'CONTEXT' : 'INFERENCE', x, y + 65, 12, color.soft, smooth(section(progress, .49, .77)), 2, 'center');
           type(side < 0 ? 'a' : 'b', x, y - 37, 24, color.ink, run, 0, 'center', true);
           interlace(x, y, 57, section(progress, .19, .88), .80, side * Math.PI / 8);
-          iris(x, y - 120, .46, section(progress, .08, .90), color.ink, .87);
+          radiantSeal(x, y - 123, 49, section(progress, .08, .90), .82);
         }
         const frame = smooth(section(progress, .50, .78));
         polygon([[center - 47, y - 47], [center + 47, y - 47], [center + 47, y + 47], [center - 47, y + 47]], color.paper, frame);
         emblem(center, y, .43, section(progress, .46, .80), color.ink);
         line(center - 43, y + 90, center + 43, y + 90, accent, frame * .85, 1);
-        knife(section(progress, .39, .52), false, .70);
       });
     }
     function identityScene() {
@@ -471,20 +556,18 @@
             inset === 1 ? .88 : .45, inset === 1 ? 2.3 : .8, inset === 1 ? accent : color.line);
         }
         const locked = smooth(section(progress, .57, .81));
-        const capitalScale = .60;
-        const capitalY = Math.max(spring - 79, headingBox.bottom + 14 + 95 * capitalScale + 8);
-        const columnTop = Math.max(spring, capitalY + 114 * capitalScale + 7);
+        const capitalY = Math.max(spring - 8, headingBox.bottom + 67);
+        const columnTop = Math.max(spring, capitalY + 50);
         for (const side of [-1, 1]) {
           const column = x + side * (half + 42);
           rect(column - 4, columnTop, 8, Math.max(0, base - columnTop) * locked, color.ink, .94);
           line(column - 12, base, column + 12, base, color.ink, locked, 2);
           if (wide) type(side < 0 ? 'IDENTITY' : 'CLEARANCE', column + side * 35, (box.top + box.bottom) / 2,
             10, color.soft, locked, 2, side < 0 ? 'right' : 'left');
-          iris(column, capitalY, capitalScale, section(progress, .18, .90), color.ink, .94);
-          quatrefoil(column, base + 29, 24, section(progress, .32, .92), accent, .92, true);
+          radiantSeal(column, capitalY, 45, section(progress, .18, .90), .88);
+          diamond(column, base + 24, 12, accent, locked, false);
         }
         interlace(x, spring - ROOT3 * half + 55, 65, section(progress, .08, .84), .80, Math.PI / 8);
-        doorPlanes(box, progress);
       });
       rowRegistration(identityBox);
     }
@@ -492,13 +575,13 @@
       for (const [side, count] of [[-1, skillCount], [1, pluginCount]]) {
         const edge = side < 0 ? box.left : box.right;
         const rail = edge + side * Math.min(33, Math.max(12, (W / 2 - Math.abs(edge)) * .38));
-        const q = smooth(section(progress, .30, .76));
+        const q = smooth(section(bookOpen, .30, .76));
         trace([[edge, box.top - 11], [rail, box.top - 32], [rail, box.bottom + 24], [edge, box.bottom + 10]],
           q, accent, complete ? .86 : .55, complete ? 1.8 : 1);
         // One branch per actual discovered item, capped visually; no fake count.
         for (let index = 0; index < Math.min(10, count); index++) {
           const y = lerp(box.top + 37, box.bottom - 27, (index + .5) / Math.min(10, count));
-          const reveal = resting ? 1 : smooth(section(progress, .45 + index * .009, .76 + index * .012));
+          const reveal = reduced ? 1 : smooth(section(bookOpen, .45 + index * .009, .76 + index * .012));
           line(rail, y, rail + side * 12 * reveal, y, accent, .8, .9);
           diamond(rail + side * 12, y, 2.5, accent, reveal, complete);
         }
@@ -509,44 +592,93 @@
         }
       }
     }
-    function archiveScene(complete = false) {
-      const box = inventoryBox || { left: -W * .37, right: W * .37, top: atY(.38), bottom: atY(.80) };
-      outside([box, headingBox], () => {
-        floralMargins(complete ? 4 : 3);
-        page(complete ? 'V' : 'IV', .067);
-        const radius = Math.min(W * .33, 350), roseY = Math.min(atY(.25), box.top - 48);
-        rose(0, roseY, radius, progress, complete ? .57 : .31);
-        interlace(0, roseY, radius * .79, section(progress, .13, .87), complete ? .56 : .38, Math.PI / 8);
-        const bound = smooth(section(progress, .19, .55)), unfold = ease(section(progress, .44, .79));
-        for (const side of [-1, 1]) {
-          const edge = side < 0 ? box.left : box.right, drift = (1 - unfold) * side * W * .33;
-          // The two leaves register against the real registry's outer bounds.
-          const points = [[edge + drift, box.top - 17], [edge + side * 20 + drift, box.top - 34],
-            [edge + side * 20 + drift, box.bottom + 27], [edge + drift, box.bottom + 11]];
-          trace(points, bound, color.ink, .62, 1.2);
-          trace(points.map(([x, y]) => [x + side * 6, y + 4]), bound, color.line, .46, .8);
-          line(edge + drift, box.bottom + 11, side * 37, box.bottom + 11 + 16 * unfold, accent, unfold * .64, .8);
-          if (complete) pointedArch(side * radius * .70, roseY + 36, 70, box.top - 25, section(progress, .31, .77), .42, .8, accent);
-          iris(edge + side * 35, box.top - 84, .51, section(progress, .20, .91), color.ink, .92);
-          for (let border = 0; border < 3; border++) {
-            quatrefoil(edge + side * 55, lerp(box.top + 72, box.bottom - 30, border / 2), 14,
-              section(progress, .32 + border * .035, .91), accent, .65, complete);
-          }
+    function codexLeaves(box) {
+      // Both paper leaves use the exact, untransformed DOM page rectangles.
+      // Ink is revealed from the common binding; text is never scaled or skewed.
+      const center = bookBox ? bookGutter : (box.left + box.right) / 2;
+      const gap = Math.min(22, (box.right - box.left) * .025);
+      const leaves = [
+        bookLeft || { left: box.left, right: center - gap, top: box.top, bottom: box.bottom },
+        bookRight || { left: center + gap, right: box.right, top: box.top, bottom: box.bottom },
+      ];
+      const top = Math.min(...leaves.map(leaf => leaf.top)), bottom = Math.max(...leaves.map(leaf => leaf.bottom));
+      for (let index = 0; index < leaves.length; index++) {
+        const leaf = leaves[index], side = index ? 1 : -1;
+        const edge = index ? leaf.right : leaf.left;
+        const visibleEdge = lerp(center, edge, bookOpen);
+        const inner = index ? leaf.left : leaf.right;
+        const left = Math.min(center, visibleEdge), right = Math.max(center, visibleEdge);
+        ctx.save(); ctx.beginPath(); ctx.rect(left, leaf.top - 18, Math.max(0, right - left), leaf.bottom - leaf.top + 54); ctx.clip();
+        // Three offset outlines read as a stacked, engraved folio rather than a
+        // floating UI card. Their marks remain perfectly flat and unshaded.
+        for (let stack = 2; stack >= 0; stack--) {
+          const inset = stack * 3;
+          polygon([[center, leaf.top + inset], [edge, leaf.top + inset], [edge, leaf.bottom + 8 + inset],
+            [inner, leaf.bottom + 8 + inset], [center, leaf.bottom + 16 + inset]],
+            stack ? color.paper : color.white, .98, stack ? color.line : color.ink, stack ? .8 : 1.25);
         }
-        archiveRoutes(box, complete);
-        knife(section(progress, .40, .52), !complete, .58);
-      });
-      const settle = resting ? 1 : smooth(section(progress, .50, .81));
-      for (const side of [-1, 1]) {
-        const x = side < 0 ? box.left : box.right;
-        for (const [y, direction] of [[box.top, -1], [box.bottom, 1]]) {
-          line(x, y, x + side * 11 * settle, y + direction * 11 * settle, accent, .82, 1.4);
-          diamond(x + side * 11, y + direction * 11, 2, accent, settle);
+        const margin = Math.min(18, (leaf.right - leaf.left) * .065);
+        line(leaf.left + margin, leaf.top + 12, leaf.right - margin, leaf.top + 12, accent, .73, .7);
+        line(leaf.left + margin, leaf.bottom - 10, leaf.right - margin, leaf.bottom - 10, color.line, .84, .7);
+        for (const yy of [leaf.top + 12, leaf.bottom - 10]) {
+          diamond(leaf.left + margin, yy, 2.5, accent, .85);
+          diamond(leaf.right - margin, yy, 2.5, accent, .85);
         }
+        const foreEdge = edge - side * 5;
+        line(foreEdge, leaf.top + 22, foreEdge, leaf.bottom - 20, color.line, .66, .7);
+        // Fore-edge notches and lower folio number stay outside all list ink.
+        for (let etch = 0; etch < 9; etch++) {
+          const yy = leaf.bottom - 24 - etch * 6;
+          line(edge, yy, edge - side * 3.5, yy - 2, accent, .62, .65);
+        }
+        type(index ? 'II' : 'I', (leaf.left + leaf.right) / 2, leaf.bottom + 27,
+          12, color.ink, bookOpen, 1.5, 'center', true);
+        ctx.restore();
       }
+      // The binding stays anchored to the measured gutter through zoom/resize.
+      const bind = smooth(section(bookOpen, 0, .32));
+      line(center, top - 10, center, bottom + 23, color.ink, .94 * bind, 1.5);
+      line(center - 3, top + 5, center - 3, bottom + 11, accent, .45 * bind, .7);
+      line(center + 3, top + 5, center + 3, bottom + 11, accent, .45 * bind, .7);
+      for (const y of [top - 10, bottom + 23]) diamond(center, y, 5, accent, bind, false);
+      for (let stitch = 1; stitch <= 5; stitch++) {
+        const yy = lerp(top, bottom, stitch / 6);
+        trace([[center - 4, yy - 4], [center + 4, yy], [center - 4, yy + 4]], 1, color.ink, bind * .82, .85);
+      }
+      return { center, top, bottom, leaves };
+    }
+    function archiveScene(complete = false) {
+      const box = bookBox || inventoryBox || { left: -W * .37, right: W * .37, top: atY(.38), bottom: atY(.80) };
+      const exclusion = inventoryBox || box;
+      outside([exclusion, headingBox], () => {
+        // The open folio is carried intact from discovery into registration.
+        // Both phases share the same locations and the persistent book clock.
+        floralMargins(3, bookOpen);
+        page('IV', .045);
+        const crestY = Math.min(atY(.25), box.top - 53);
+        const crestX = bookBox ? bookGutter : (box.left + box.right) / 2;
+        radiantSeal(crestX, crestY, wide ? 88 : 57, bookOpen, .79);
+        const railWidth = Math.min(W * .24, 280);
+        for (const side of [-1, 1]) {
+          const left = side < 0 ? crestX - railWidth - 114 : crestX + 114;
+          braid(left, crestY + 9, railWidth, bookOpen, .74);
+        }
+        archiveRoutes(exclusion, complete);
+      });
+      const folio = codexLeaves(box);
       if (complete) {
+        const arrival = reduced ? 1 : smooth(section(progress, .12, .75));
+        const stampX = folio.leaves[1].right - 27, stampY = folio.bottom + 30;
+        diamond(stampX, stampY, 11, accent, arrival, false);
+        if (inventory.status === 'complete' && issues.length === 0) {
+          trace([[stampX - 5, stampY], [stampX - 1, stampY + 4], [stampX + 6, stampY - 5]],
+            arrival, accent, .92, 1.45);
+        } else {
+          line(stampX, stampY - 4, stampX, stampY + 1, accent, arrival, 1.25);
+          dot(stampX, stampY + 5, 1.2, accent, arrival);
+        }
         const caption = inventory.status === 'complete' ? issues.length ? 'ARCHIVE / CHECK ISSUES' : 'ARCHIVE / LOCAL' : 'ARCHIVE / NOT READ';
-        type(caption, box.left, box.bottom + 39, 9, issues.length ? accent : color.soft, .85, 1.2);
+        type(caption, box.left, folio.bottom + 47, 9, issues.length ? accent : color.soft, arrival * .85, 1.2);
       }
     }
     function readyScene() {
@@ -566,11 +698,7 @@
       line(start, ty + 93, start + (wide ? 423 : 380) * reveal, ty + 93, accent, .82, 1.1);
       type(identity, tx, ty + 132, 20, color.ink, reveal, 2.4, wide ? 'left' : 'center');
       if (wide) type('DSH / CONCORD', tx, ty + 174, 10, color.soft, reveal, 2.7);
-      for (const side of [-1, 1]) {
-        iris(x + side * radius * .77, y + radius * .92, .64,
-          section(progress, .30 + (side > 0 ? .07 : 0), .95), color.ink, .93, side * -.16);
-      }
-      knife(section(progress, .32, .48), false, .84);
+      braid(x - radius * .85, y + radius * 1.53, radius * 1.70, section(progress, .30, .95), .88);
     }
     function interaction() {
       if (reduced || impulse <= .001) return;

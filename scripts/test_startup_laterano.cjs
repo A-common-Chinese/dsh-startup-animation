@@ -150,6 +150,16 @@ for (const sample of [empty, loading, loaded]) {
 const moving = { ...base, phase: 0, waiting: true, progress: 0, impulse: 0, textAge: 2 };
 assert.notEqual(render(1280, 720, moving).hash, render(1280, 720, { ...moving, drag: 3 }).hash);
 assert.notEqual(render(1280, 720, moving).hash, render(1280, 720, { ...moving, pointer: [0, 1] }).hash);
+// A gate can already be partly or fully composed before the user presses play.
+// Its explicit visual clock must override the paused sequence's zero progress.
+for (const phase of [0, 2, 4]) {
+  for (const visualProgress of [.2, .6, 1]) {
+    const state = { ...base, phase, visualProgress, progress: 0, textAge: 3, impulse: 0, bookOpen: 1 };
+    assert.equal(render(1280, 720, { ...state, waiting: true }).hash,
+      render(1280, 720, { ...state, waiting: false }).hash,
+      `confirming gate ${phase} must not collapse the already composed geometry`);
+  }
+}
 for (const phase of [2, 3]) {
   const state = { ...base, phase, reducedMotion: true };
   const baseline = render(1280, 720, state);
@@ -213,13 +223,23 @@ for (const [width, height] of [[1920, 1080], [390, 844]]) {
   for (let phase = 0; phase < phaseCount; phase++) {
     const frame = render(width, height, { ...base, phase, reducedMotion: true, impulse: 0 });
     const motifs = curvedCutwork(frame.records);
-    assert.ok(motifs.length >= 6, `phase ${phase} must retain iris petals and patterned cutouts at ${width}px`);
+    assert.ok(motifs.length >= 3, `phase ${phase} must retain the three veined iris petals at ${width}px`);
     assert.ok(motifs.some(motif => motif.alpha > .85), 'floral anchors must retain visible ink mass, not only faint outlines');
+    const standards = frame.records.filter(record => record.op === 'moveTo' && record.args[0] === 0 && record.args[1] === -95);
+    assert.equal(standards.length, 1, `phase ${phase} must have one principal iris, without duplicated marginal flowers`);
+    const [a, b, c, d] = standards[0].matrix;
+    assert.ok(a > 0 && d > 0 && Math.abs(b) < 1e-9 && Math.abs(c) < 1e-9,
+      'the principal iris must stand upright, without rotation, reflection or shear');
+    const falling = frame.records.filter(record => record.op === 'moveTo' && record.args[0] === 7 && record.args[1] === 24);
+    assert.equal(falling.length, 2, 'one iris has exactly two mirrored falling petals');
+    const left = screenPoint(falling[0]), right = screenPoint(falling[1]), axisX = screenPoint(standards[0])[0];
+    assert.ok(Math.abs(left[0] + right[0] - axisX * 2) < 1e-7 && Math.abs(left[1] - right[1]) < 1e-7,
+      'the paired petals must be balanced around the upright axis');
   }
 }
 const unfolded = progress => render(1280, 720, { ...base, phase: 0, progress, textAge: 3, impulse: 0 }).records;
 const early = curvedCutwork(unfolded(.10)), late = curvedCutwork(unfolded(.78));
-assert.ok(late.length > early.length + 4, 'botanical plates and patterned panels must enter in separate delayed groups');
+assert.ok(late.length >= early.length + 3, 'the three veined petals must unfold after the early geometric construction');
 assert.notEqual(render(1280, 720, { ...base, phase: 0, progress: .45, textAge: 3, impulse: 0 }).hash,
   render(1280, 720, { ...base, phase: 0, progress: .78, textAge: 3, impulse: 0 }).hash,
   'the middle movement must unfold and reassemble rather than instantly reveal the whole design');
@@ -231,18 +251,69 @@ for (const phase of [0, 1, 5]) {
   assert.ok(records.slice(shield + 1).some(record => record.op === 'fill' && record.args[0] === 'evenodd'),
     'seal ink must be laid down after its clean medallion');
 }
-for (const [width, height, card, title] of [
-  [1528, 732, { x: 573, y: 333, width: 383, height: 223 }, { x: 414, y: 181, width: 700, height: 122 }],
-  [390, 844, { x: 43, y: 351, width: 304, height: 252 }, { x: 19, y: 173, width: 352, height: 150 }],
+// The marginal vocabulary includes a 24-ray seal and a real over/under braid,
+// not just more copies of the iris. Record the ink geometry of these structures.
+const rich = render(1280, 720, { ...base, phase: 0, reducedMotion: true }).records;
+const rays = rich.filter(record => record.op === 'moveTo' && Math.abs(record.args[0] - 53 * .46) < 1e-9 && [-2, -5.2].includes(record.args[1]));
+assert.equal(rays.length, 24, 'the radiant seal must construct its full set of alternating rays');
+assert.equal(new Set(rays.map(record => record.matrix.slice(0, 4).map(value => value.toFixed(6)).join(','))).size, 24,
+  'the seal rays must occupy distinct radial directions');
+const paperBridges = rich.filter(record => record.op === 'stroke' && record.strokeStyle === '#f6f7f6' && record.lineWidth === 5);
+assert.ok(paperBridges.length >= 2, 'the manuscript braid needs paper knockouts at alternating crossings');
+assert.ok(rich.filter(record => record.op === 'stroke' && record.lineWidth === 1.45).length > paperBridges.length,
+  'the braid must redraw continuous ink above its paper crossings');
+
+// Locate the actual iris transform instead of guessing its center or scale.
+// Its full petal envelope must remain visible and outside the measured folio.
+for (const [width, height, page] of [
+  [1280, 720, { x: 244, y: 315, width: 873, height: 252 }],
+  [1528, 732, { x: 305, y: 318, width: 982, height: 247 }],
+  [1920, 1080, { x: 360, y: 410, width: 1210, height: 388 }],
+  [390, 844, { x: 24, y: 350, width: 342, height: 280 }],
 ]) {
-  const unit = Math.min(width, height) / 1000;
-  for (const progress of [.4, 1]) {
-    const { records } = render(width, height, { ...base, phase: 2, progress, impulse: 0, textAge: 3, layout: { heading: title, identity: card } });
-    const capitals = records.filter(record => record.op === 'moveTo' && record.args[0] === 0 && record.args[1] === -95 &&
-      Math.abs(record.matrix[3] - .60 * unit) < 1e-7);
-    assert.equal(capitals.length, 2, 'measure both actual curved capital petals');
-    for (const capital of capitals) assert.ok(screenPoint(capital)[1] > title.y + title.height + 14 * unit,
-      'the iris capital must sit below the full measured heading exclusion, including while it unfolds');
+  for (let phase = 0; phase < phaseCount; phase++) {
+    const inBook = phase === 3 || phase === 4;
+    const { records } = render(width, height, { ...base, phase, reducedMotion: true,
+      layout: inBook ? { book: { ...page, gutterX: page.x + page.width / 2 }, inventory: page } : {} });
+    const axis = records.find(record => record.op === 'moveTo' && record.args[0] === 0 && record.args[1] === -95);
+    assert.ok(axis, 'the completed scene must retain its principal iris');
+    const [left, top] = screenPoint(axis, -109, -95), [right, bottom] = screenPoint(axis, 109, 114);
+    assert.ok(left >= 0 && top >= 0 && right <= width && bottom <= height,
+      `the full iris silhouette must fit the ${width}x${height} viewport in phase ${phase}`);
+    if (inBook) assert.ok(right < page.x || left > page.x + page.width || bottom < page.y || top > page.y + page.height,
+      `the full iris silhouette must stay outside the actual folio at ${width}px`);
   }
 }
-console.log(`PASS: ${samples} Laterano frames, exact card/heading geometry, true arches, curved iris cutwork, staged layers, still holds, truthful inventory and reduced motion. Peak: ${maxCommands}/12000.`);
+
+// Actual host book rectangles are in screen pixels, including a possibly
+// off-center binding. Every opening pose must reveal outward from that binding.
+for (const [width, height, book] of [
+  [1528, 732, { x: 305, y: 318, width: 922, height: 247, gutterX: 755, spread: true,
+    left: { x: 305, y: 318, width: 437, height: 247 }, right: { x: 768, y: 318, width: 459, height: 247 } }],
+  [390, 844, { x: 24, y: 350, width: 342, height: 280, gutterX: 198, spread: true,
+    left: { x: 24, y: 350, width: 163, height: 280 }, right: { x: 209, y: 350, width: 157, height: 280 } }],
+]) {
+  const unit = Math.min(width, height) / 1000;
+  const geometry = records => records.filter(record => record.op === 'rect' && Math.abs(record.args[3] * unit - (book.height + 54 * unit)) < 1e-7);
+  for (const bookOpen of [0, .2, .5, 1]) {
+    const state = { ...base, visualProgress: .75, textAge: 3, bookOpen, impulse: 0, layout: { book, inventory: book } };
+    const loading = render(width, height, { ...state, phase: 3 }), ready = render(width, height, { ...state, phase: 4 });
+    const clips = geometry(loading.records);
+    assert.equal(clips.length, 2, 'each measured folio leaf needs one outward reveal mask');
+    for (let index = 0; index < 2; index++) {
+      const page = index ? book.right : book.left, edge = index ? page.x + page.width : page.x;
+      const clip = clips[index], from = screenPoint(clip), to = screenPoint(clip, clip.args[0] + clip.args[2], clip.args[1] + clip.args[3]);
+      const movingEdge = book.gutterX + (edge - book.gutterX) * bookOpen;
+      assert.ok(Math.abs(from[0] - Math.min(book.gutterX, movingEdge)) < 1e-7 && Math.abs(to[0] - Math.max(book.gutterX, movingEdge)) < 1e-7,
+        'the page reveal must start at the measured shared gutter and expand toward its actual outer edge');
+      assert.ok(Math.abs(from[1] - (page.y - 18 * unit)) < 1e-7, 'folio mask must stay aligned with its actual page top');
+    }
+    assert.deepEqual(geometry(ready.records), clips, 'receiving results must carry the open folio into the next chapter without refolding');
+    if (bookOpen > .5) {
+      const binding = loading.records.filter(record => record.op === 'moveTo' && record.lineWidth === 1.5 && record.globalAlpha === .94);
+      assert.ok(binding.some(record => Math.abs(screenPoint(record)[0] - book.gutterX) < 1e-7 &&
+        Math.abs(screenPoint(record)[1] - (book.y - 10 * unit)) < 1e-7), 'the book spine must follow the measured gutter through resizing');
+    }
+  }
+}
+console.log(`PASS: ${samples} Laterano frames, exact measured geometry, single upright iris, radiant seals/braids, center-opening folio, gate continuity, truthful inventory and reduced motion. Peak: ${maxCommands}/12000.`);
