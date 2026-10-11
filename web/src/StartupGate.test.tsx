@@ -125,6 +125,33 @@ describe("StartupGate", () => {
     expect(document.activeElement).toBe(frame);
     expect(finish).not.toHaveBeenCalled();
   });
+  it("asks the film to skip and stays mounted until its trusted response", () => {
+    const finish = vi.fn();
+    render(
+      <StartupGate enabled startupUrl="http://127.0.0.1:8770/startup-preview.html" onFinish={finish}>
+        <p>Private workbench</p>
+      </StartupGate>,
+    );
+    const frame = screen.getByTitle("DSH 沉浸式启动动画") as HTMLIFrameElement;
+    const url = new URL(frame.src);
+    const post = vi.spyOn(frame.contentWindow!, "postMessage");
+    const focus = vi.spyOn(frame, "focus");
+    fireEvent.click(screen.getByRole("button", { name: "跳过开场" }));
+    expect(post).toHaveBeenCalledExactlyOnceWith({
+      source: "dsh-harness", channel: url.searchParams.get("channel"), type: "request-skip",
+    }, url.origin);
+    expect(focus).toHaveBeenCalledExactlyOnceWith({ preventScroll: true });
+    expect(finish).not.toHaveBeenCalled();
+    expect(screen.getByTitle("DSH 沉浸式启动动画")).toBe(frame);
+    expect(screen.queryByText("Private workbench")).toBeNull();
+    const reply = { source: "dsh-startup", channel: url.searchParams.get("channel"), type: "skip" };
+    act(() => send(frame, { data: { ...reply, channel: "old-playback" } }));
+    act(() => send(frame, { data: reply, source: window }));
+    expect(finish).not.toHaveBeenCalled();
+    act(() => send(frame, { data: reply }));
+    expect(finish).toHaveBeenCalledExactlyOnceWith("skip");
+    expect(screen.getByText("Private workbench")).toBeTruthy();
+  });
   it("uses the latest callback without replacing the running frame", () => {
     const first = vi.fn(),
       second = vi.fn();
@@ -145,7 +172,7 @@ describe("StartupGate", () => {
     expect(first).not.toHaveBeenCalled();
     expect(second).toHaveBeenCalledOnce();
   });
-  it("offers an explicit escape when the startup endpoint never becomes ready", () => {
+  it("retries an unavailable film with a new channel instead of bypassing its identity gate", () => {
     vi.useFakeTimers();
     const finish = vi.fn();
     render(
@@ -153,9 +180,33 @@ describe("StartupGate", () => {
         <p>App</p>
       </StartupGate>,
     );
+    const original = screen.getByTitle("DSH 沉浸式启动动画") as HTMLIFrameElement;
+    const originalUrl = new URL(original.src);
+    const originalSource = original.contentWindow;
     act(() => vi.advanceTimersByTime(101));
-    fireEvent.click(screen.getByText("进入工作台"));
-    expect(finish).toHaveBeenCalledWith("unavailable");
+    expect(screen.queryByText("App")).toBeNull();
+    expect(screen.queryByRole("button", { name: "进入工作台" })).toBeNull();
+    expect(finish).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "重新加载开场" }));
+    const frame = screen.getByTitle("DSH 沉浸式启动动画") as HTMLIFrameElement;
+    const url = new URL(frame.src);
+    expect(frame).not.toBe(original);
+    expect(url.searchParams.get("channel")).not.toBe(originalUrl.searchParams.get("channel"));
+    act(() => send(frame, {
+      source: originalSource,
+      data: { source: "dsh-startup", channel: originalUrl.searchParams.get("channel"), type: "skip" },
+    }));
+    expect(finish).not.toHaveBeenCalled();
+    act(() => send(frame, {
+      data: { source: "dsh-startup", channel: url.searchParams.get("channel"), type: "ready" },
+    }));
+    act(() => vi.advanceTimersByTime(101));
+    expect(screen.queryByText("启动动画暂时无法连接")).toBeNull();
+    expect(screen.getByTitle("DSH 沉浸式启动动画")).toBe(frame);
+    expect(finish).not.toHaveBeenCalled();
+    act(() => send(frame));
+    expect(finish).toHaveBeenCalledExactlyOnceWith("complete");
+    expect(screen.getByText("App")).toBeTruthy();
   });
   it("removes listeners on unmount and never completes from late messages", () => {
     const finish = vi.fn();

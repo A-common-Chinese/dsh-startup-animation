@@ -204,6 +204,7 @@ function createHarness(options = {}) {
 
   return {
     element, document, windowEvents, frames, contexts, sources, animations, drawStates, requests, messages, canvasCalls,
+    parentWindow: sandbox.parent,
     resizeNode(id) { for (const observer of resizeObservers) if (observer.nodes.has(element(id))) observer.callback(); },
     releaseAudio() { pendingAudio.splice(0).forEach(resolve => resolve()); },
     tap() {
@@ -583,9 +584,95 @@ async function main() {
   invalidEmbed.element('skip').emit('click'); assert.equal(invalidEmbed.messages.length, 0, 'invalid parent origins disable the bridge');
   const standalone = createHarness({ search: embedSearch }); standalone.element('skip').emit('click');
   assert.equal(standalone.messages.length, 0, 'query parameters cannot make a standalone page send messages');
+  for (const embedded of [false, true]) {
+    let finishAccessCheck;
+    const unknownAccess = createHarness({ embedded, search: embedded ? embedSearch : '', accessFetch: async () =>
+      new Promise(resolve => { finishAccessCheck = resolve; }) }); await settle();
+    unknownAccess.element('skip').emit('click');
+    unknownAccess.document.emit('keydown', { key: 'Escape', target: unknownAccess.element('experience') });
+    unknownAccess.element('seek').value = '20.4'; unknownAccess.element('seek').emit('input');
+    unknownAccess.element('interactive').emit('click'); unknownAccess.tap(); await settle(); unknownAccess.frame(9001);
+    assert.ok(unknownAccess.drawStates.at(-1).phase <= 2, 'unknown initial access state must not allow skip, seeking, background input or continuous playback past identity');
+    assert.equal(unknownAccess.messages.filter(item => ['skip', 'complete', 'unlocked'].includes(item.message.type)).length, 0,
+      'a pending access check must not tell the parent to open the workbench');
+    assert.equal(unknownAccess.requests.filter(item => ['/api/profile', '/api/load'].includes(item.url)).length, 0);
+    finishAccessCheck(jsonResponse({ enabled: true, unlocked: true, token: profileFixture.token, sound: false, profile: profileFixture }));
+    await settle(); await settle();
+    assert.equal(unknownAccess.element('accessEntry').hidden, false, 'a late response containing an old cookie must still require fresh identity verification');
+    unknownAccess.windowEvents.emit('pagehide');
+  }
+  for (const failure of [
+    async () => jsonResponse({ error: { message: 'Fixture access unavailable' } }, 503),
+    async () => jsonResponse({ enabled: true, unlocked: true }),
+    async () => { throw new TypeError('Fixture local host disconnected'); },
+  ]) {
+    const failedAccess = createHarness({ embedded: true, search: embedSearch, accessFetch: failure }); await settle();
+    failedAccess.element('skip').emit('click'); failedAccess.element('seek').value = '20.4'; failedAccess.element('seek').emit('input');
+    failedAccess.tap(); await settle(); failedAccess.frame(9001);
+    assert.equal(failedAccess.messages.filter(item => ['skip', 'complete', 'unlocked'].includes(item.message.type)).length, 0,
+      'an unavailable or malformed access check must never be interpreted as authorized workbench entry');
+    assert.equal(failedAccess.requests.filter(item => item.url === '/api/load').length, 0);
+    const retry = failedAccess.element('accessRetry');
+    retry.closest = selector => selector.split(',').includes('#accessRetry') ? retry : null;
+    retry.focus();
+    const retryPointer = { button: 0, pointerId: 30, clientX: 450, clientY: 450, target: retry };
+    failedAccess.element('experience').emit('pointerdown', retryPointer); failedAccess.element('experience').emit('pointerup', retryPointer);
+    assert.equal(failedAccess.document.activeElement, retry, 'the reconnect button outside the form must retain focus instead of starting a film gesture');
+    assert.equal(failedAccess.element('experience').captures.size, 0, 'reconnect must not capture the stage pointer');
+    failedAccess.windowEvents.emit('pagehide');
+  }
   // A real access lock is independent of playback, seeking and skip controls.
   let unlocked = false, passwordAttempts = 0;
   const accessStatus = () => ({ enabled: true, unlocked, token: profileFixture.token, sound: false, profile: { username: profileFixture.username, badge_id: profileFixture.badge_id } });
+  const parentSkip = createHarness({ embedded: true, search: embedSearch, accessFetch: async () => jsonResponse({ ...accessStatus(), unlocked: true }) });
+  await settle();
+  const skipRequest = { source: parentSkip.parentWindow, origin: 'http://127.0.0.1:8770', data: { source: 'dsh-harness', channel: 'channel-test-12345678', type: 'request-skip' } };
+  const invalidSkipRequests = [
+    { ...skipRequest, origin: 'http://127.0.0.1:8771' },
+    { ...skipRequest, source: {} },
+    { ...skipRequest, data: { ...skipRequest.data, source: 'dsh-startup' } },
+    { ...skipRequest, data: { ...skipRequest.data, channel: 'different-channel-1234' } },
+    { ...skipRequest, data: { ...skipRequest.data, type: 'skip' } },
+  ];
+  function rejectForeignSkipRequests() {
+    const previousTime = parentSkip.drawStates.at(-1).time, previousFocus = parentSkip.document.activeElement, previousMessages = parentSkip.messages.length;
+    for (const message of invalidSkipRequests) parentSkip.windowEvents.emit('message', message);
+    assert.equal(parentSkip.drawStates.at(-1).time, previousTime, 'foreign parent messages must not seek or skip the startup scene');
+    assert.equal(parentSkip.document.activeElement, previousFocus, 'foreign parent messages must not move focus into the identity form');
+    assert.equal(parentSkip.messages.length, previousMessages, 'incorrect source, origin, channel and message type must not receive completion');
+  }
+  rejectForeignSkipRequests();
+  parentSkip.windowEvents.emit('message', skipRequest);
+  assert.equal(parentSkip.drawStates.at(-1).phase, 2, 'an authorized parent skip request must use the film identity barrier');
+  assert.equal(parentSkip.document.activeElement, parentSkip.element('accessPassword'), 'a parent skip request before verification must focus the editable password input');
+  assert.equal(parentSkip.messages.filter(item => ['skip', 'complete'].includes(item.message.type)).length, 0, 'the parent cannot bypass this playback password challenge');
+  parentSkip.element('accessPassword').value = 'parent-skip-test-password'; parentSkip.element('accessForm').emit('submit');
+  await settle(); await settle();
+  assert.equal(parentSkip.element('accessEntry').hidden, true);
+  rejectForeignSkipRequests();
+  parentSkip.windowEvents.emit('message', skipRequest);
+  assert.equal(parentSkip.messages.at(-1).message.type, 'skip', 'a verified playback must accept a correctly addressed parent skip request');
+  parentSkip.windowEvents.emit('message', skipRequest); parentSkip.windowEvents.emit('message', skipRequest);
+  assert.equal(parentSkip.messages.filter(item => ['skip', 'complete'].includes(item.message.type)).length, 1, 'repeated parent requests must finish the film exactly once');
+  assert.equal(parentSkip.frames.size, 0, 'parent skip must dispose the film animation loop');
+
+  // An older static-profile response may arrive after reconnect discovers an
+  // unavailable host. It must not turn that failure into permission to skip.
+  let finishStaleProfile, staleAccessReads = 0;
+  const stalePreview = createHarness({
+    accessFetch: async () => ++staleAccessReads === 1 ? jsonResponse({}, 404) : jsonResponse({ message: 'Fixture host unavailable' }, 503),
+    fetch: async url => url === '/api/profile' ? new Promise(resolve => { finishStaleProfile = resolve; }) : jsonResponse({}, 404),
+  });
+  await settle();
+  const staleProfileRequest = stalePreview.requests.find(request => request.url === '/api/profile');
+  stalePreview.element('connectLocal').emit('click'); await settle();
+  assert.equal(staleProfileRequest.signal.aborted, true, 'reconnect must supersede the pending static profile probe');
+  finishStaleProfile(jsonResponse({}, 404)); await settle();
+  stalePreview.element('skip').emit('click');
+  assert.equal(stalePreview.drawStates.at(-1).phase, 2, 'a superseded profile 404 must not enable offline skip after a newer access failure');
+  assert.equal(stalePreview.requests.filter(request => request.url === '/api/load').length, 0);
+  stalePreview.windowEvents.emit('pagehide');
+
   const locked = createHarness({ embedded: true, search: embedSearch, accessFetch: async (url, init) => {
     if (url === '/api/access/unlock') {
       passwordAttempts++;
@@ -624,6 +711,79 @@ async function main() {
   assert.equal(locked.element('saveIdentity').disabled, false);
   locked.frame(9500); await settle();
   assert.equal(locked.requests.filter(item => item.url === '/api/load').length, 1, 'real inventory starts only after successful verification');
+
+  // A valid host cookie belongs to the web session, not to a fresh startup
+  // identity challenge. Exercise the real Client in both playback surfaces.
+  for (const embedded of [false, true]) {
+    let freshPosts = 0;
+    const cookieAccess = async (url, init) => {
+      if (url === '/api/access/unlock') {
+        freshPosts++;
+        if (JSON.parse(init.body).password !== 'fresh-start-test-password')
+          return jsonResponse({ error: { message: 'Fixture password rejected' } }, 401);
+      }
+      return jsonResponse({ ...accessStatus(), unlocked: true });
+    };
+    const fresh = createHarness({ embedded, search: embedded ? embedSearch : '', accessFetch: cookieAccess }); await settle();
+    assert.equal(fresh.element('accessEntry').hidden, false, 'a pre-existing unlocked cookie must still show the new startup password input');
+    assert.equal(fresh.element('accessPassword').disabled, false, 'a fresh identity challenge must be editable');
+    assert.equal(fresh.requests.filter(request => request.url === '/api/profile').length, 0, 'an old cookie must not consume the protected profile before the fresh challenge');
+    fresh.element('skip').emit('click');
+    fresh.element('seek').value = '20.4'; fresh.element('seek').emit('input');
+    fresh.tap(); await settle(); fresh.frame(7001);
+    assert.equal(fresh.drawStates.at(-1).phase, 2, 'background taps, seeking and skip must hold at fresh identity verification');
+    assert.equal(fresh.requests.filter(request => request.url === '/api/load').length, 0);
+    assert.equal(fresh.messages.filter(item => ['skip', 'complete', 'unlocked'].includes(item.message.type)).length, 0);
+    const input = fresh.element('accessPassword'), form = fresh.element('accessForm');
+    input.closest = selector => selector.split(',').includes('#accessForm') ? form : selector.split(',').includes('input') ? input : null;
+    input.focus();
+    const pointer = { button: 0, pointerId: 29, clientX: 450, clientY: 450, target: input };
+    fresh.element('experience').emit('pointerdown', pointer); fresh.element('experience').emit('pointerup', pointer);
+    assert.equal(fresh.document.activeElement, input, 'typing focus must not be stolen by the full-screen pointer gesture');
+    assert.equal(fresh.element('experience').captures.size, 0, 'password input must not become a captured stage gesture');
+    const inputTime = fresh.drawStates.at(-1).time;
+    for (const key of ['Enter', ' ', 'r', 'p']) fresh.document.emit('keydown', { key, target: input });
+    assert.equal(fresh.drawStates.at(-1).time, inputTime, 'password keystrokes must not trigger global playback or replay shortcuts');
+    assert.equal(freshPosts, 0, 'focusing and typing must never submit or authorize by themselves');
+    input.value = 'incorrect-fresh-test-password'; form.emit('submit'); await settle();
+    assert.equal(fresh.element('accessEntry').hidden, false, 'an existing valid cookie cannot override a failed fresh password');
+    input.value = 'fresh-start-test-password'; form.emit('submit'); await settle(); await settle();
+    assert.equal(freshPosts, 2);
+    assert.equal(fresh.element('accessEntry').hidden, true, 'only a successful fresh POST plus cookie verification releases the challenge');
+    input.value = 'unsubmitted-stale-test-value';
+    fresh.windowEvents.emit('pagehide'); fresh.windowEvents.emit('pageshow', { persisted: true });
+    await settle(); await settle();
+    assert.equal(input.value, '', 'restoring a cached page must discard an old password field value');
+    assert.equal(fresh.element('accessEntry').hidden, false, 'restoring a previously verified page must require fresh playback verification');
+    assert.equal(input.disabled, false, 'the restored password challenge must be editable');
+    fresh.element('skip').emit('click'); fresh.tap(); await settle(); fresh.frame(9001);
+    assert.equal(fresh.drawStates.at(-1).phase, 2, 'a cached verification cannot release the restored identity chapter');
+    assert.equal(freshPosts, 2, 'restoring and resuming must not silently resubmit an old password');
+    assert.equal(fresh.messages.filter(item => ['skip', 'complete'].includes(item.message.type)).length, 0);
+    input.value = 'fresh-start-test-password'; form.emit('submit'); await settle(); await settle();
+    assert.equal(freshPosts, 3);
+    assert.equal(fresh.element('accessEntry').hidden, true, 'the restored page must accept a new password verification');
+    input.value = 'unsubmitted-stale-test-value';
+    fresh.element('replay').emit('click'); await settle();
+    assert.equal(input.value, '', 'replay must discard any unsubmitted password field value');
+    assert.equal(fresh.element('accessEntry').hidden, false, 'replay must start a new password challenge even though the browser keeps its session cookie');
+    fresh.element('skip').emit('click'); fresh.tap(); await settle(); fresh.frame(12001);
+    assert.equal(fresh.drawStates.at(-1).phase, 2, 'replayed identity cannot reuse the previous film authorization');
+    assert.equal(freshPosts, 3);
+    const reopened = createHarness({ embedded, search: embedded ? embedSearch : '', accessFetch: cookieAccess }); await settle();
+    assert.equal(reopened.element('accessEntry').hidden, false, 'opening a new page must require its own startup confirmation');
+    fresh.windowEvents.emit('pagehide'); reopened.windowEvents.emit('pagehide');
+  }
+
+  let finishOldPassword;
+  const replayDuringPassword = createHarness({ embedded: true, search: embedSearch, accessFetch: async url =>
+    url.endsWith('/unlock') ? new Promise(resolve => { finishOldPassword = resolve; }) : jsonResponse({ ...accessStatus(), unlocked: true }) });
+  await settle(); replayDuringPassword.element('accessPassword').value = 'fresh-start-test-password'; replayDuringPassword.element('accessForm').emit('submit');
+  await settle(); replayDuringPassword.element('replay').emit('click');
+  finishOldPassword(jsonResponse({ ...accessStatus(), unlocked: true })); await settle(); await settle();
+  assert.equal(replayDuringPassword.element('accessEntry').hidden, false, 'a password response from the previous playback cannot authorize a new replay');
+  assert.equal(replayDuringPassword.messages.filter(item => item.message.type === 'unlocked').length, 0);
+  replayDuringPassword.windowEvents.emit('pagehide');
 
   const noCookie = createHarness({ accessFetch: async (url) => jsonResponse({ ...accessStatus(), unlocked: url.endsWith('/unlock') }) });
   await settle(); noCookie.element('accessPassword').value = 'only-a-test-password'; noCookie.element('accessForm').emit('submit'); await settle(); await settle();
@@ -664,7 +824,7 @@ async function main() {
   const oldConnect = contention.requests.filter(item => item.url === '/api/access').at(-1);
   contention.element('accessPassword').value = 'only-a-test-password'; contention.element('accessForm').emit('submit');
   await settle(); await settle();
-  assert.equal(contentionReads, 3, 'verification must make a fresh GET rather than reuse the pre-unlock request');
+  assert.ok(contentionReads >= 3, 'verification must make a fresh GET rather than reuse the pre-unlock request; subsequent profile hydration may recheck access');
   assert.equal(oldConnect.signal.aborted, true, 'superseded manual reconnect must be aborted');
   assert.equal(contention.element('accessEntry').hidden, true);
   finishOldConnect(jsonResponse({ ...accessStatus(), unlocked: false })); await settle();

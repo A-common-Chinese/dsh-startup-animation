@@ -1,8 +1,9 @@
 /* A narrow completion bridge for the React Harness startup gate.
-   The standalone preview keeps its replay behavior. No parent commands execute. */
+   Parent skip requests go through the preview's own access guard. */
 (() => {
   'use strict';
   let target = null, channel = '', finished = false;
+  let skipRequest = null;
   try {
     const params = new URLSearchParams(location.search);
     const origin = new URL(params.get('parentOrigin'));
@@ -17,8 +18,15 @@
   function send(type) {
     if (target) parent.postMessage({ source: 'dsh-startup', channel, type }, target);
   }
+  window.addEventListener('message', event => {
+    if (!target || finished || event.source !== parent || event.origin !== target) return;
+    const data = event.data;
+    if (!data || data.source !== 'dsh-harness' || data.channel !== channel || data.type !== 'request-skip') return;
+    skipRequest?.();
+  });
   globalThis.DSHEmbed = Object.freeze({
     get embedded() { return target !== null; },
+    onSkipRequest(handler) { if (!finished && typeof handler === 'function') skipRequest = handler; },
     ready() { send('ready'); },
     // The parent rechecks its own backend cookie before opening the workbench.
     unlocked() { if (!finished) send('unlocked'); },
@@ -26,6 +34,7 @@
     finish(reason) {
       if (!target || finished || !['complete', 'skip'].includes(reason)) return false;
       finished = true;
+      skipRequest = null;
       send(reason);
       return true;
     },

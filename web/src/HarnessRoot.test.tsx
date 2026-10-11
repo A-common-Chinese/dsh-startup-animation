@@ -116,10 +116,30 @@ describe("Access-gated Harness", () => {
     expect(api.accessStatus).toHaveBeenCalledTimes(2);
     expect(api.bootstrap).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "跳过开场" }));
+    expect(screen.getByTitle("DSH 沉浸式启动动画")).toBe(frame);
+    expect(api.accessStatus).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText("Private workbench")).toBeNull();
+    await act(async () => send(frame, "skip"));
     await waitFor(() => expect(api.accessStatus).toHaveBeenCalledTimes(3));
     expect(screen.getByRole("heading", { name: "访问身份确认" })).toBeTruthy();
     expect(api.bootstrap).not.toHaveBeenCalled();
     expect(screen.queryByText("Private workbench")).toBeNull();
+  });
+  it("keeps an existing authenticated workbench hidden until the film approves skip", async () => {
+    vi.mocked(api.accessStatus).mockResolvedValue({ ...status, unlocked: true });
+    vi.mocked(consumeInitialPlayback).mockReturnValue(true);
+    render(<HarnessRoot />);
+    const frame = await screen.findByTitle("DSH 沉浸式启动动画") as HTMLIFrameElement;
+    await waitFor(() => expect(api.bootstrap).toHaveBeenCalledOnce());
+    const workbench = screen.getByText("Private workbench");
+    expect(workbench.closest("[hidden]")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "跳过开场" }));
+    expect(screen.getByTitle("DSH 沉浸式启动动画")).toBe(frame);
+    expect(workbench.closest("[hidden]")).toBeTruthy();
+    expect(api.accessStatus).toHaveBeenCalledOnce();
+    act(() => send(frame, "skip"));
+    expect(workbench.closest("[hidden]")).toBeNull();
+    expect(screen.queryByTitle("DSH 沉浸式启动动画")).toBeNull();
   });
   it("shows a failed post-unlock recheck and retries without requiring the password again", async () => {
     vi.mocked(api.accessStatus).mockResolvedValueOnce(status).mockRejectedValueOnce(new Error("访问状态读取失败"));

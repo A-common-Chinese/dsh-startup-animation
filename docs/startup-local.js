@@ -17,6 +17,7 @@
       this.token = ''; this._loadGeneration = 0; this._saveGeneration = 0;
       this._connectGeneration = 0; this._connecting = null;
       this.access = { supported: false, enabled: false, unlocked: true };
+      this.playbackVerified = false; this.previewOnly = false;
       this.unlocking = false; this.accessMessage = ''; this._unlockGeneration = 0;
     }
     emit() { this.onChange(this); }
@@ -25,7 +26,14 @@
       try { const body = await response.json(); detail = text(body.message) || text(body.error?.message) || text(body.error); } catch (_) { /* An HTML error is not an API response. */ }
       return new Error(detail || `${fallback}（HTTP ${response.status}）`);
     }
-    get locked() { return this.access.enabled && !this.access.unlocked; }
+    get locked() { return this.access.enabled && (!this.access.unlocked || !this.playbackVerified); }
+    resetVerification() {
+      // Replaying the opening requires a new proof, without revoking another
+      // Harness window's authenticated cookie or changing its password.
+      this._unlockGeneration++; this._unlockAbort?.abort(); this._unlockAbort = null;
+      this.playbackVerified = false; this.unlocking = false; this.accessMessage = '';
+      this.emit();
+    }
     validateAccess(result) {
       if (typeof result.enabled !== 'boolean' || typeof result.unlocked !== 'boolean' || !text(result.token) || !text(result.profile?.username)) throw new Error('访问验证接口返回了无效资料');
     }
@@ -45,7 +53,7 @@
       if (!force && this.connection === 'unavailable') return Promise.resolve(false);
       const generation = ++this._connectGeneration;
       const controller = new AbortController(); this._profileAbort = controller;
-      this.connection = 'connecting'; this.connectionMessage = '正在连接本地 DSH'; this.emit();
+      this.connection = 'connecting'; this.previewOnly = false; this.connectionMessage = '正在连接本地 DSH'; this.emit();
       this._connecting = (async () => {
         await Promise.resolve();
         const timer = setTimeout(() => controller.abort(), 8000);
@@ -66,6 +74,10 @@
             }
           }
           const response = await this.request('/api/profile', { signal: controller.signal, cache: 'no-store', credentials: 'same-origin' });
+          if (generation !== this._connectGeneration) return false;
+          // Two explicit 404s identify a static preview. Network failures and
+          // malformed access responses must never be treated as permission.
+          if (access.status === 404 && response.status === 404) this.previewOnly = true;
           if (!response.ok) throw await this.failure(response, '本地接口不可用');
           const result = await response.json();
           if (result.mode !== 'local' || !text(result.token) || !text(result.username)) throw new Error('本地接口返回了无效资料');
@@ -98,12 +110,19 @@
         if (generation !== this._unlockGeneration) return false;
         this.validateAccess(result);
         if (!result.unlocked) throw new Error('访问尚未解锁');
-        // Re-read using the actual cookie, never trust the POST body alone.
+        // Re-read using the actual cookie, never trust the POST body or an
+        // already-authenticated cookie without this playback's successful POST.
+        if (!await this.connect(true) || !this.access.unlocked) throw new Error('无法确认访问状态，请重试');
+        if (generation !== this._unlockGeneration) return false;
+        this.playbackVerified = true;
+        // The first recheck deliberately stops at the identity gate. Once the
+        // current proof is confirmed, hydrate the protected full profile.
         if (!await this.connect(true) || this.locked) throw new Error('无法确认访问状态，请重试');
         if (generation !== this._unlockGeneration) return false;
         this.accessMessage = '验证通过 · 访问已授权'; return true;
       } catch (error) {
         if (generation === this._unlockGeneration) {
+          this.playbackVerified = false;
           this.access = { ...this.access, unlocked: false };
           this.accessMessage = error?.name === 'AbortError' ? '验证超时，请重试' : messageOf(error);
         }

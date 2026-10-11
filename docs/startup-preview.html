@@ -61,13 +61,14 @@ h1{font-weight:800;letter-spacing:.18em;font-feature-settings:"palt";text-indent
 .access-entry button:hover{background:var(--accent);border-color:var(--accent);color:var(--bg)}
 .identity-card .access-state{font:9px/1.5 var(--mono);text-align:right;letter-spacing:.08em;color:var(--soft)}
 .identity-card .access-feedback{margin:3px 0 8px;min-height:16px;font-size:10px;line-height:1.6;color:var(--accent);letter-spacing:.05em;overflow-wrap:anywhere}
+.identity-card .access-retry{pointer-events:auto;touch-action:manipulation;border:1px solid var(--line);font-size:11px;margin-bottom:8px}
 .identity-card .identity-source{display:flex;border:0;border-top:1px solid var(--line);padding:9px 0 0;margin:0;justify-content:space-between;gap:9px;align-items:center;font:8px/1.5 var(--mono);color:var(--soft);letter-spacing:.07em}
 .identity-source .identity-value{font-size:8px;font-weight:500;letter-spacing:.03em}
 .identity-card[data-access=verified]{border-top-color:var(--accent)}
 @media(max-width:600px){.identity-phase .stage-copy{top:30%}.identity-card .access-row{grid-template-columns:91px minmax(0,1fr)}.identity-card .access-feedback{font-size:9px}.identity-card .identity-source{font-size:7px}}
 @media(max-height:600px){.identity-phase .stage-copy{top:26%}.identity-phase .phase-note{display:none}.identity-phase .identity-card{top:calc(100% + 12px)}.identity-card .identity-row{min-height:34px;padding:5px 0}.identity-card .access-feedback{margin:0 0 4px;min-height:14px}.identity-card .identity-source{padding-top:6px}}
 </style>
-<link rel="stylesheet" href="startup-laterano.css?v=20261011-concord-liturgy1">
+<link rel="stylesheet" href="startup-laterano.css?v=20261011-concord-access2">
 </head>
 <body>
 <div class="shell">
@@ -82,6 +83,7 @@ h1{font-weight:800;letter-spacing:.18em;font-feature-settings:"palt";text-indent
 <span class="access-state" id="accessState" data-motion="type" data-motion-delay=".33">CHECKING ACCESS</span>
 </form>
 <p class="access-feedback" id="accessMessage" role="status" aria-live="polite">正在读取访问设置</p>
+<button id="accessRetry" class="access-retry" type="button" hidden>重新检查访问设置</button>
 <p class="identity-source"><span data-motion="type" data-motion-delay=".4">PROFILE / LOCAL</span><b class="identity-value"><span class="identity-target" id="cardMode">LOCAL / CONNECTING</span><span class="identity-glyphs" id="cardModeVisual" aria-hidden="true">LOCAL / CONNECTING</span></b></p>
 </div></div>
 <section class="inventory-panel" id="inventoryPanel" aria-label="真实的本地加载清单" hidden><div class="inventory-columns" id="inventoryBook">
@@ -104,5 +106,5 @@ h1{font-weight:800;letter-spacing:.18em;font-feature-settings:"palt";text-indent
 </section>
 <div class="archive-subtitle"><span id="subtitleZh" data-motion="mask" data-motion-delay="0.12">深潜协议 · 等待接入</span><span id="subtitleEn" data-motion="type" data-motion-delay="0.22">DEEP DIVE / AWAITING CONNECTION</span></div><p id="status" class="sr-only" role="status" aria-live="polite">档案待命。点按画面任意位置开始。</p>
 </div>
-<script src="startup-sequence.js?v=20261011-concord-liturgy1"></script><script src="startup-emblem.js?v=20261011-concord-liturgy1"></script><script src="startup-laterano-emblem.js?v=20261011-concord-liturgy1"></script><script src="startup-text.js?v=20261011-concord-liturgy1"></script><script src="startup-visuals.js?v=20261011-concord-liturgy1"></script><script src="startup-laterano.js?v=20261011-concord-liturgy1"></script><script src="startup-local.js?v=20261011-concord-liturgy1"></script><script src="startup-identity.js?v=20261011-concord-liturgy1"></script><script src="startup-voice.js?v=20261011-concord-liturgy1"></script><script src="startup-embed.js?v=20261011-concord-liturgy1"></script><script src="startup-preview.js?v=20261011-concord-liturgy1"></script>
+<script src="startup-sequence.js?v=20261011-concord-access2"></script><script src="startup-emblem.js?v=20261011-concord-access2"></script><script src="startup-laterano-emblem.js?v=20261011-concord-access2"></script><script src="startup-text.js?v=20261011-concord-access2"></script><script src="startup-visuals.js?v=20261011-concord-access2"></script><script src="startup-laterano.js?v=20261011-concord-access2"></script><script src="startup-local.js?v=20261011-concord-access2"></script><script src="startup-identity.js?v=20261011-concord-access2"></script><script src="startup-voice.js?v=20261011-concord-access2"></script><script src="startup-embed.js?v=20261011-concord-access2"></script><script src="startup-preview.js?v=20261011-concord-access2"></script>
 </body></html>

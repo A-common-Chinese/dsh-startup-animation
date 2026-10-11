@@ -33,11 +33,22 @@ export function StartupGate({
   const [done, setDone] = useState(false);
   const [frame, setFrame] = useState<Frame>();
   const [unavailable, setUnavailable] = useState(false);
+  const [retry, setRetry] = useState(0);
   const complete = (reason: FinishReason) => {
     if (finished.current) return;
     finished.current = true;
     setDone(true);
     callback.current?.(reason);
+  };
+  const requestSkip = () => {
+    const target = iframe.current;
+    if (finished.current || !frame || !target?.contentWindow) return;
+    // Only the embedded film knows whether this playback has passed its
+    // identity gate. Ask it to skip; never treat a parent button as consent.
+    target.contentWindow.postMessage({
+      source: "dsh-harness", channel: frame.channel, type: "request-skip",
+    }, frame.origin);
+    target.focus({ preventScroll: true });
   };
 
   useEffect(() => {
@@ -95,13 +106,14 @@ export function StartupGate({
       alive = false;
       clearTimeout(timeout);
     };
-  }, [enabled, startupUrl, readyTimeoutMs]);
+  }, [enabled, startupUrl, readyTimeoutMs, retry]);
 
   if (!enabled || done) return <>{children}</>;
   return (
     <div className="startup-gate" aria-label="DSH 启动序列">
       {frame && (
         <iframe
+          key={frame.channel}
           ref={iframe}
           title="DSH 沉浸式启动动画"
           src={frame.url}
@@ -112,12 +124,16 @@ export function StartupGate({
       {unavailable && (
         <div className="startup-fallback" role="status">
           <p>启动动画暂时无法连接</p>
-          <p>可以直接进入 Harness，稍后从设置中重播。</p>
-          <button onClick={() => complete("unavailable")}>进入工作台</button>
+          <p>请重新加载开场，完成访问身份确认后继续。</p>
+          <button onClick={() => {
+            setUnavailable(false);
+            setFrame(undefined);
+            setRetry((value) => value + 1);
+          }}>重新加载开场</button>
         </div>
       )}
       {!unavailable && (
-        <button className="gate-skip" onClick={() => complete("skip")}>
+        <button className="gate-skip" disabled={!frame} onClick={requestSkip}>
           跳过开场
         </button>
       )}
