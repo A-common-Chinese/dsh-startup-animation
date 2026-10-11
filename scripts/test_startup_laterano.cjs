@@ -184,6 +184,28 @@ function distanceToSegments(point, segments) {
 const inventory = { status: 'complete', skills: [{ name: 'actual-skill' }], plugins: [{ name: 'actual-plugin' }], issues: [] };
 const base = { identity: 'CatShark / 星海', inventory, choice: 1, pointer: [.82, .22], drag: .8, impulse: .35 };
 
+// Connection labels must sit outside the actual moving interlace silhouette.
+// Match its shared local origin, rather than assuming a fixed circle radius.
+for (const [width, height] of [[1280, 720], [390, 844], [900, 420]]) for (const ambientTime of [0, 7.3]) {
+  const sample = render(width, height, { ...base, phase: 1, progress: 1, textAge: 4, ambientTime, pointer: [.5, .5], drag: 0, impulse: 0 });
+  const nodes = sample.paintings.filter(paint => paint.op === 'fill' && paint.commands.length === 1 &&
+    paint.commands[0].op === 'arc' && paint.commands[0].args[2] === 6).map(paint => screenPoint(paint.commands[0])).sort((a, b) => a[0] - b[0]);
+  for (const [index, letter] of ['a', 'b'].entries()) {
+    const label = sample.paintings.find(paint => paint.op === 'fillText' && paint.args[0] === letter && paint.font.startsWith('400 24px'));
+    assert.ok(label && nodes[index], 'both local connection labels and their actual node geometry must be present');
+    const points = sample.paintings.filter(paint => paint.op !== 'fillText' &&
+      Math.abs(paint.matrix[4] - nodes[index][0]) < 1e-6 && Math.abs(paint.matrix[5] - nodes[index][1]) < 1e-6).flatMap(pathSegments).flat();
+    assert.ok(points.length, 'the label clearance fixture must include the real interlace around its node');
+    const [x] = screenPoint(label, label.args[1], label.args[2]), glyphWidth = 24 * .58 * Math.min(width, height) / 1000;
+    assert.ok(index ? x > Math.max(...points.map(point => point[0])) + 3 : x + glyphWidth < Math.min(...points.map(point => point[0])) - 3,
+      'connection letters must remain outside rotating opaque star plates in wide, narrow and short viewports');
+  }
+}
+if (process.argv.includes('--connection-labels')) {
+  console.log('PASS: moving connection geometry keeps both outer labels clear at 3 viewport proportions and 2 ambient poses.');
+  process.exit(0);
+}
+
 // Exercise the celestial layer through its actual public API and canvas state.
 // Its measured text holes are independent, so overlapping title/card rectangles
 // cannot cancel one another through even-odd parity.
@@ -245,7 +267,12 @@ for (const [width, height] of [[1280, 720], [390, 844], [2560, 360], [360, 1600]
       assert.ok(exclusions.every(Boolean) && new Set(exclusions).size === exclusions.length,
         'every celestial mark must independently protect the real title, page headings and occupied text even when their rectangles overlap');
     }
-    assert.equal(full.hash, renderSky(width, height, { ...state, ambient: 80, bookAge: 80 }).hash, 'completed celestial geometry must settle instead of orbiting through the text');
+    assert.equal(full.hash, renderSky(width, height, { ...state, bookAge: 80 }).hash, 'completed celestial construction must not rebuild while its independent motion clock is fixed');
+    const drifting = renderSky(width, height, { ...state, ambient: 7.3 });
+    assert.notEqual(full.hash, drifting.hash, 'selected celestial parts must keep moving after their entrance has finished');
+    for (const paint of drifting.paintings) for (const box of [heading, ...readings]) {
+      assert.ok(textExclusion(paint, box), 'self-moving ornamentation must retain the same real-text exclusions');
+    }
     assert.equal(renderSky(width, height, { ...state, reduced: true, progress: 0, sourceProgress: 0, bookAge: 0 }).hash,
       renderSky(width, height, { ...state, reduced: true, progress: 1, sourceProgress: 1, bookAge: 80, ambient: 80 }).hash,
       'reduced motion must show one stable, complete celestial arrangement');
@@ -307,6 +334,50 @@ function skyBodies(sample) {
 }
 const skyFrame = (bookAge, extra = {}) => renderSky(1280, 720, { ...celestialState, bookAge, ...extra });
 const startBodies = skyBodies(skyFrame(0));
+const radiusEnvelope = body => Math.max(...pathSegments(body.paint).flat().map(point => Math.hypot(point[0] - body.point[0], point[1] - body.point[1])));
+for (const [width, height] of [[1280, 720], [390, 844]]) {
+  const entering = skyBodies(renderSky(width, height, { phase: 2, progress: .25 }));
+  const arrived = skyBodies(renderSky(width, height, { phase: 2, progress: 1 }));
+  const vectors = entering.map((body, index) => arrived[index].point.map((value, axis) => value - body.point[axis]));
+  assert.ok(vectors[0][1] > 8 && vectors[1][1] < -8,
+    'sun and moon must enter from opposing vertical directions instead of sharing one horizontal slide');
+  assert.ok(vectors.every(([dx, dy]) => Math.abs(dy) > Math.abs(dx)),
+    'the celestial entrance must read as a descent and ascent while retaining its smaller curved lateral motion');
+}
+for (const phase of [2, 3, 4]) {
+  const state = phase === 2 ? { phase, progress: 1, heading: broadIdentityHeading, identity: skySourceIdentity } : { ...celestialState, phase, bookAge: 3 };
+  const first = renderSky(1280, 720, { ...state, ambient: 0 }), bodies = skyBodies(first);
+  for (const ambient of [.7, 3.1, 8.8, 27]) {
+    const next = renderSky(1280, 720, { ...state, ambient }), moved = skyBodies(next);
+    moved.forEach((body, index) => {
+      assert.deepEqual(body.point, bodies[index].point, 'self-motion must preserve the measured sun and moon anchor centers');
+      assert.ok(Math.abs(radiusEnvelope(body) - radiusEnvelope(bodies[index])) < 1e-6,
+        'rotation must stay inside its fixed silhouette envelope instead of breathing into nearby text');
+    });
+    assert.notDeepEqual(pathSegments(moved[1].paint), pathSegments(bodies[1].paint), 'the actual crescent must visibly turn around its own fixed center');
+    const solarFaces = sample => sample.paintings.filter(paint => paint.op === 'fill' && paint.commands.filter(command => command.op === 'lineTo').length === 3 &&
+      pathSegments(paint).flat().every(point => Math.hypot(point[0] - bodies[0].point[0], point[1] - bodies[0].point[1]) < radiusEnvelope(bodies[0]) * 3));
+    assert.ok(solarFaces(first).length > 2, 'the solar self-motion fixture must include real radial white blades');
+    assert.notDeepEqual(solarFaces(first).flatMap(pathSegments), solarFaces(next).flatMap(pathSegments),
+      'solar blades must have their own motion rather than merely inherit the moon transform');
+  }
+}
+// The next display frame may advance ambient time before changing chapters.
+// A book must begin with the captured displayed pose, then smoothly catch up.
+for (const progress of [.4, .63, 1]) {
+  const captured = 4.37, current = captured + .08;
+  const source = renderSky(1280, 720, { phase: 2, progress, ambient: captured, heading: broadIdentityHeading, identity: skySourceIdentity });
+  const incomingState = { ...celestialState, sourceProgress: progress, sourceAmbient: captured, ambient: current };
+  assert.deepEqual(celestialInk(renderSky(1280, 720, { ...incomingState, bookAge: 0 })), celestialInk(source),
+    'age zero must inherit the last displayed celestial angle even when the ambient clock has already advanced');
+  for (const age of [0, .09, .1999, .2, .24]) {
+    const before = renderSky(1280, 720, { ...incomingState, bookAge: age }).paintings.flatMap(pathSegments).flat();
+    const after = renderSky(1280, 720, { ...incomingState, bookAge: age + .000001 }).paintings.flatMap(pathSegments).flat();
+    assert.equal(before.length, after.length, 'source ambient catch-up must not replace celestial shapes');
+    assert.ok(before.every((point, index) => Math.hypot(point[0] - after[index][0], point[1] - after[index][1]) < .1),
+      'captured ambient motion must blend into the shared clock without a turn or position discontinuity');
+  }
+}
 const unmeasuredFolio = { ...celestialFolio, leaves: [{ ...celestialFolio.leaves[0], writing: undefined }, celestialFolio.leaves[1]] };
 for (const paint of skyFrame(3, { folio: unmeasuredFolio }).paintings) {
   assert.ok(textExclusion(paint, unmeasuredFolio.leaves[0]), 'a not-yet-measured page must be protected in full instead of guessing where its real text ends');
@@ -325,7 +396,7 @@ for (let index = 0; index < 2; index++) {
   assert.ok(Math.abs(final[0] - (index ? leaf.x + leaf.width : leaf.x)) < 32 && final[1] > leaf.y && final[1] < leaf.y + leaf.height,
     'the original sun and moon must become clasps registered to the measured outer page edges');
 }
-assert.deepEqual(celestialInk(skyFrame(3)), celestialInk(skyFrame(80, { ambient: 800 })), 'completed celestial binding must settle');
+assert.deepEqual(celestialInk(skyFrame(3)), celestialInk(skyFrame(80)), 'completed celestial binding must keep its constructed pose at a fixed ambient clock');
 assert.deepEqual(celestialInk(skyFrame(1.05)), celestialInk(skyFrame(1.05, { phase: 4 })),
   'real inventory completion must not restart the celestial clock');
 const crowdedFolio = { ...celestialFolio, leaves: celestialFolio.leaves.map(leaf => ({ ...leaf, writing: {
@@ -357,7 +428,7 @@ for (const [width, height] of [[390, 844], [1280, 420], [896, 504]]) {
       'source sky must project uniformly at age zero, including the saved title-avoiding pose');
   }
 }
-let samples = 0, maxCommands = 0;
+let samples = 0, maxCommands = 0, maxPaintCalls = 0;
 for (const [width, height] of [[1920, 1080], [1280, 720], [390, 844]]) {
   for (const light of [true, false]) {
     for (let phase = 0; phase < phaseCount; phase++) {
@@ -366,6 +437,7 @@ for (const [width, height] of [[1920, 1080], [1280, 720], [390, 844]]) {
         const first = render(width, height, state), second = render(width, height, state);
         assert.equal(first.hash, second.hash, 'frames must be deterministic');
         maxCommands = Math.max(maxCommands, first.records.length);
+        maxPaintCalls = Math.max(maxPaintCalls, first.paintings.length);
         assert.ok(first.records.length < 12000, 'canvas command budget exceeded');
         samples++;
       }
@@ -450,13 +522,23 @@ for (const [width, height] of [[0, 100], [100, 0], [-1, 100], [Infinity, 200], [
 }
 draw(null, 1920, 1080, base);
 
-// All six movements finish constructing and hold. Only genuine in-progress
-// discovery may keep a travelling carrier; idle ambient time never spins art.
+// Completed construction never restarts from elapsed sequence time. Selected
+// ornamental parts have their own ambient clock, independent of scan status.
 for (let phase = 0; phase < phaseCount; phase++) {
   const state = { ...base, phase, progress: 1, impulse: 0, textAge: 3, ambientTime: 0, time: 0 };
-  assert.equal(render(1280, 720, state).hash, render(1280, 720, { ...state, ambientTime: 100, time: 100 }).hash,
-    `phase ${phase} must hold its composed pose once construction finishes`);
+  assert.equal(render(1280, 720, state).hash, render(1280, 720, { ...state, time: 100 }).hash,
+    `phase ${phase} must retain its built pose when only the sequence time changes`);
 }
+const linkNodes = progress => render(1280, 720, { ...base, phase: 1, progress, ambientTime: 0,
+  pointer: [.5, .5], drag: 0, impulse: 0 }).paintings.filter(paint => paint.op === 'fill' && paint.globalAlpha === 1 &&
+    paint.commands.length === 1 && paint.commands[0].op === 'arc' && paint.commands[0].args[2] === 6)
+  .map(paint => screenPoint(paint.commands[0])).sort((a, b) => a[0] - b[0]);
+const arrivingNodes = linkNodes(.25), dockedNodes = linkNodes(1);
+assert.equal(arrivingNodes.length, 2); assert.equal(dockedNodes.length, 2);
+assert.ok(dockedNodes[0][0] < arrivingNodes[0][0] && dockedNodes[1][0] > arrivingNodes[1][0],
+  'connection nodes must expand outward from the center');
+assert.ok(dockedNodes[0][1] - arrivingNodes[0][1] > 10 && dockedNodes[1][1] - arrivingNodes[1][1] < -10,
+  'the paired connection nodes must arrive along opposed upper and lower arcs');
 
 // Live carriers are tied to the host's real scan status. A timeout, cancelled
 // scan, or completed scan must not leave an ornamental loop claiming activity.
@@ -464,8 +546,12 @@ for (const status of ['idle', 'loading', 'complete', 'error', 'unavailable', 'ca
   const state = { ...base, phase: 3, progress: 1, visualProgress: 1, bookAge: 4, bookOpen: 1,
     textAge: 4, impulse: 0, drag: 0, pointer: [.5, .5], inventory: { ...inventory, status } };
   const first = render(1280, 720, { ...state, ambientTime: .25 }), later = render(1280, 720, { ...state, ambientTime: 1.05 });
-  if (status === 'loading') assert.notEqual(first.hash, later.hash, 'an actual pending scan must visibly move along its route');
-  else assert.equal(first.hash, later.hash, `${status} inventory must not animate a false scan`);
+  const carriers = sample => sample.paintings.filter(paint => paint.op === 'stroke' && paint.lineWidth === 2.3 && paint.globalAlpha === .9 &&
+    paint.commands.length === 2 && paint.commands[0].op === 'moveTo' && paint.commands[1].op === 'lineTo').map(paint => pathSegments(paint));
+  if (status === 'loading') {
+    assert.equal(carriers(first).length, 2, 'the actual pending scan must have a carrier on each real catalog route');
+    assert.notDeepEqual(carriers(first), carriers(later), 'actual pending scan carriers must visibly move along their routes');
+  } else assert.equal(carriers(first).length + carriers(later).length, 0, `${status} inventory must not animate a false scan`);
   assert.equal(render(1280, 720, { ...state, reducedMotion: true, ambientTime: .25, bookAge: 0 }).hash,
     render(1280, 720, { ...state, reducedMotion: true, ambientTime: 100, bookAge: 100 }).hash,
     `reduced motion must remain stable for actual ${status} inventory`);
@@ -489,6 +575,7 @@ for (const [width, height] of [[240, 320], [320, 240], [2560, 360], [360, 1600]]
       layout: { book, inventory: book, identity: book, heading: { x: width * .2, y: height * .16, width: width * .6, height: height * .14 } } });
     assert.ok(sample.records.length < 12000, `extreme ${width}x${height} phase ${phase} exceeded the drawing budget`);
     maxCommands = Math.max(maxCommands, sample.records.length);
+    maxPaintCalls = Math.max(maxPaintCalls, sample.paintings.length);
     extremeSamples++;
   }
 }
@@ -734,8 +821,8 @@ for (const [width, height, book] of [
       'white window faces must recompose with the existing ink rather than pop in as a new layer');
   }
   for (const progress of [.55, .63, 1]) {
-    const old = render(width, height, { ...base, phase: 2, visualProgress: progress, impulse: 0, layout: sourceLayout });
-    const next = frame(0, { bookSource: { ...state.bookSource, progress } });
+    const old = render(width, height, { ...base, phase: 2, visualProgress: progress, ambientTime: 7.3, impulse: 0, layout: sourceLayout });
+    const next = frame(0, { ambientTime: 7.38, bookSource: { ...state.bookSource, progress, ambientTime: 7.3 } });
     const oldRings = manuscriptRings(old, unit), nextRings = manuscriptRings(next, unit);
     assert.equal(oldRings.length, 8, 'the preceding identity scene must actually paint both seal originals');
     assert.equal(nextRings.length, oldRings.length, 'entry to the book must inherit the complete pair of seal originals');
@@ -866,6 +953,7 @@ for (const [width, height, left, right] of [
   const frame = changes => {
     const sample = render(width, height, { ...state, ...changes });
     maxCommands = Math.max(maxCommands, sample.records.length);
+    maxPaintCalls = Math.max(maxPaintCalls, sample.paintings.length);
     assert.ok(sample.records.length < 12000, 'manuscript illumination must remain within the canvas command budget');
     return sample;
   };
@@ -992,4 +1080,4 @@ for (const [width, height, left, right] of [
   assert.ok(overlapInk.every(paint => clipHole(paint, { ...left.list, height: left.occupiedBottom - left.list.y })),
     'overlapping title/body exclusions must both remain active on the same ornamental strokes');
 }
-console.log(`PASS: ${samples} reference + ${extremeSamples} extreme Laterano frames, measured writing exclusions, layered manuscript illumination, single upright iris, portal-to-spine continuity, staggered curved folio, truthful loading activity and reduced motion. Peak: ${maxCommands}/12000.`);
+console.log(`PASS: ${samples} reference + ${extremeSamples} extreme Laterano frames, measured writing exclusions, layered manuscript illumination, single upright iris, portal-to-spine continuity, staggered curved folio, truthful loading activity and reduced motion. Peak: ${maxCommands}/12000 commands; ${maxPaintCalls} paint calls.`);

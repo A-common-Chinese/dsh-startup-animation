@@ -335,6 +335,7 @@ async function main() {
   assert.equal(host.element('play').textContent, '暂停');
   host.frame(200);
   const pausedTime = host.element('currentTime').textContent;
+  const hiddenAmbient = host.drawStates.at(-1).ambientTime;
 
   host.document.hidden = true;
   host.windowEvents.emit('pagehide', { persisted: true });
@@ -351,6 +352,7 @@ async function main() {
   assert.notEqual(host.element('play').textContent, '暂停', 'restoration must wait for user confirmation');
   host.frame(400);
   assert.equal(host.element('currentTime').textContent, pausedTime, 'restoration must not advance the paused sequence');
+  assert.equal(host.drawStates.at(-1).ambientTime, hiddenAmbient, 'a restored background page must not autonomously advance its celestial motion');
   assert.equal(host.sources.length, beforeRestore, 'restoration must not start audio by itself');
 
   host.tap(); await settle();
@@ -932,6 +934,8 @@ async function main() {
     assert.equal(binding.phase, 3, 'the finished identity must continue into the book without replaying a full identity chapter');
     assert.deepEqual(binding.bookSource.layout, finalIdentity.layout, 'the verified handoff must inherit the actual last drawn identity bounds');
     assert.equal(binding.bookSource.progress, finalIdentity.visualProgress);
+    assert.equal(binding.bookSource.ambientTime, finalIdentity.ambientTime, 'the book must retain the last actually painted celestial angle before the frame clock advances');
+    assert.ok(binding.ambientTime > binding.bookSource.ambientTime, 'the handoff fixture must exercise a real ambient clock advance, not only two drawings at the same time');
     assert.equal(binding.bookOpen, 0, 'password success must not expose text before the source geometry opens its leaves');
     assert.equal(confirmation.canvasCalls.filter(call => call.op === 'drawImage').length, copiesBeforeBook, 'verified identity must recompose as vectors instead of cross-fading a snapshot');
     assert.equal(confirmation.requests.filter(request => request.url === '/api/load').length, 1, 'only the authorized book phase may request the real catalogs');
@@ -965,6 +969,8 @@ async function main() {
     'book construction must start from the actual last painted portal rectangles');
   assert.equal(collectedPortal.bookSource.progress, outgoingPortal.visualProgress,
     'the source pose must preserve the last painted construction progress');
+  assert.equal(collectedPortal.bookSource.ambientTime, outgoingPortal.ambientTime,
+    'source ornaments must inherit the actual last painted ambient clock');
   assert.deepEqual(JSON.parse(JSON.stringify(collectedPortal.bookSource.viewport)), { width: 1280, height: 720 },
     'source coordinates must retain their original viewport for resize reprojection');
   assert.equal(collectedPortal.bookOpen, 0, 'body text must remain covered while the portal collects into the binding');
@@ -1017,8 +1023,10 @@ async function main() {
       'new page text bounds must follow the actual pane-relative responsive DOM, not the source scale');
     assert.equal(portalBook.canvasCalls.filter(call => call.op === 'drawImage').length, portalCopies, 'resizing the unfolding geometry must not capture an old raster scene');
   }
+  const ambientBeforePause = portalBook.drawStates.at(-1).ambientTime;
   portalBook.element('play').emit('click'); portalBook.frame(621);
   assert.equal(portalBook.drawStates.at(-1).bookAge, ageBeforeResize, 'pausing must freeze the portal-to-book construction');
+  assert.equal(portalBook.drawStates.at(-1).ambientTime, ambientBeforePause, 'pause must freeze all independent celestial motion too');
   portalBook.element('seek').value = '9.6'; portalBook.element('seek').emit('input');
   assert.equal(portalBook.drawStates.at(-1).bookSource, null, 'direct seeking to a book must discard an unrelated saved portal');
   assert.equal(portalBook.drawStates.at(-1).bookAge, 0);
@@ -1029,6 +1037,22 @@ async function main() {
   portalBook.element('seek').value = '9.8'; portalBook.element('seek').emit('input');
   assert.equal(portalBook.drawStates.at(-1).bookOpen, 0, 'backward seeking must be able to close an already opened text mask');
   portalBook.windowEvents.emit('pagehide'); portalStream.close(); await settle();
+  // A confirmation gate holds the sequence, but its decorative clock is still
+  // alive. The pause shortcut must stop that clock without confirming a gate.
+  const waitingMotion = createHarness({ fetch: lateranoFetch(ndjsonStream()) }); await settle();
+  waitingMotion.frame(1001);
+  const waitingMotionPose = waitingMotion.drawStates.at(-1);
+  assert.equal(waitingMotionPose.waiting, true);
+  waitingMotion.document.emit('keydown', { key: 'p', target: waitingMotion.element('experience') });
+  waitingMotion.frame(2001);
+  assert.equal(waitingMotion.drawStates.at(-1).ambientTime, waitingMotionPose.ambientTime, 'P must freeze self-motion even when the sequence is already waiting for confirmation');
+  assert.equal(waitingMotion.drawStates.at(-1).time, waitingMotionPose.time, 'pausing a gate must not confirm or advance its sequence');
+  assert.equal(waitingMotion.drawStates.at(-1).waiting, true);
+  waitingMotion.document.emit('keydown', { key: 'p', target: waitingMotion.element('experience') }); await settle();
+  waitingMotion.frame(2401);
+  assert.ok(waitingMotion.drawStates.at(-1).ambientTime > waitingMotionPose.ambientTime, 'P again must resume the shared decorative clock');
+  assert.equal(waitingMotion.drawStates.at(-1).phase, waitingMotionPose.phase, 'resuming the gate must continue its own chapter rather than skip it');
+  waitingMotion.windowEvents.emit('pagehide');
   // Waiting is a playback gate, not a second animation clock. Confirming a
   // partly composed scene must preserve its pose; explicit seeks still rewind.
   const smoothGate = createHarness({ fetch: lateranoFetch(ndjsonStream()) }); await settle();
@@ -1047,14 +1071,17 @@ async function main() {
   assert.equal(smoothGate.drawStates.at(-1).visualProgress, gatePose, 'identity confirmation must not reassemble the portal from zero');
   smoothGate.element('play').emit('click');
   const pausedPose = smoothGate.drawStates.at(-1).visualProgress;
+  const pausedAmbient = smoothGate.drawStates.at(-1).ambientTime;
   smoothGate.frame(7701);
   assert.equal(smoothGate.drawStates.at(-1).visualProgress, pausedPose, 'manual pause must freeze the geometric clock');
+  assert.equal(smoothGate.drawStates.at(-1).ambientTime, pausedAmbient, 'a manual pause must freeze self-moving seals without a separate timer');
   smoothGate.element('seek').value = '7.8'; smoothGate.element('seek').emit('input');
   assert.ok(Math.abs(smoothGate.drawStates.at(-1).visualProgress - .5) < 1e-9, 'a seek to the midpoint must display the actual midpoint pose');
   smoothGate.element('seek').value = '6.36'; smoothGate.element('seek').emit('input');
   assert.ok(Math.abs(smoothGate.drawStates.at(-1).visualProgress - .1) < 1e-9, 'an explicit backward seek must be able to rewind the geometry');
   smoothGate.element('replay').emit('click');
   assert.equal(smoothGate.drawStates.at(-1).visualProgress, 0, 'replay starts a fresh construction');
+  assert.equal(smoothGate.drawStates.at(-1).ambientTime, 0, 'replay must reset the same shared ornament clock');
 
   // These are independently measured DOM rectangles in a nonzero pane origin.
   // A slight gap and unequal leaf widths prevent a guessed screen-center spine

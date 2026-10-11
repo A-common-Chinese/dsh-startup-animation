@@ -10,6 +10,14 @@
   const mix = (a, b, q) => a + (b - a) * q;
   const section = (x, a, b) => smooth((x - a) / (b - a));
   const validBox = box => box && [box.left, box.right, box.top, box.bottom].every(Number.isFinite);
+  const starForms = new Map();
+  function starForm(rays) {
+    if (!starForms.has(rays)) starForms.set(rays, Array.from({ length: rays * 2 }, (_, n) => {
+      const a = n * Math.PI / rays - Math.PI / 2, radius = n % 2 ? .24 : 1;
+      return [Math.cos(a) * radius, Math.sin(a) * radius];
+    }));
+    return starForms.get(rays);
+  }
 
   function draw(ctx, state) {
     const { width: W, height: H, unit, palette: c } = state;
@@ -24,6 +32,11 @@
     const age = reduced ? 3 : Math.max(0, Number.isFinite(state.bookAge) ? state.bookAge : 3);
     const gather = book ? section(age, 0, .86) : 0;
     const ink = c.blue, white = c.pureWhite || '#ffffff';
+    const currentAmbient = !reduced && Number.isFinite(state.ambient) ? Math.max(0, state.ambient) : 0;
+    // Start with the clock of the last painted identity frame. Resume the one
+    // continuous host clock smoothly; manual pause freezes both clocks there.
+    const ambient = reduced ? 0 : book && Number.isFinite(state.sourceAmbient) ?
+      mix(Math.max(0, state.sourceAmbient), currentAmbient, section(age, 0, .20)) : currentAmbient;
 
     // Reconstruct the source sky before projecting it uniformly, just as the
     // church does. A changed viewport must not stretch its old crescent or sun.
@@ -76,18 +89,16 @@
       if (fill) { ctx.fillStyle = fill; ctx.fill(); }
       if (outline) { ctx.strokeStyle = outline; ctx.lineWidth = Math.max(css(.55), weight); ctx.stroke(); }
     }
-    function ring(x, y, radius, q = 1, color = c.line, alpha = .7, weight = .9) {
+    function ring(x, y, radius, q = 1, color = c.line, alpha = .7, weight = .9, start = -Math.PI / 2, span = TAU) {
       if (q <= 0 || radius <= 0) return;
-      ctx.beginPath(); ctx.arc(x, y, radius, -Math.PI / 2, -Math.PI / 2 + TAU * clamp(q));
+      ctx.beginPath(); ctx.arc(x, y, radius, start, start + span * clamp(q));
       ctx.strokeStyle = color; ctx.globalAlpha = alpha; ctx.lineWidth = Math.max(css(.5), weight); ctx.stroke();
     }
     function star(x, y, radius, rays, q, angle = 0, solid = true) {
       if (q <= 0 || radius <= 0) return;
-      const points = Array.from({ length: rays * 2 }, (_, n) => {
-        const a = n * Math.PI / rays - Math.PI / 2 + angle;
-        const r = radius * q * (n % 2 ? .24 : 1);
-        return [x + Math.cos(a) * r, y + Math.sin(a) * r];
-      });
+      const cosine = Math.cos(angle), sine = Math.sin(angle), scale = radius * q;
+      const points = starForm(rays).map(([xx, yy]) =>
+        [x + (xx * cosine - yy * sine) * scale, y + (xx * sine + yy * cosine) * scale]);
       polygon(points, solid ? white : null, ink, 1, .85);
     }
     function sun(x, y, radius, q, turn) {
@@ -97,12 +108,16 @@
       for (let n = 0; n < 12; n++) {
         const part = section(q, .04 + n % 4 * .045, .66 + n % 4 * .06);
         if (!part) continue;
-        const a = n * TAU / 12 + turn + (n % 2 ? -1 : 1) * (1 - part) * .65;
+        const orbit = ambient * (n % 2 ? -.19 : .24) * q;
+        const a = n * TAU / 12 + turn + orbit + (n % 2 ? -1 : 1) * (1 - part) * .65;
         const r = radius * mix(2.05, .88, part), span = radius * (.11 + .07 * part);
         const radial = radius * .31;
-        const at = (rr, aa) => [x + Math.cos(aa) * rr, y + Math.sin(aa) * rr];
-        polygon([at(r - radial, a), at(r, a - span / Math.max(r, .01)), at(r + radial, a),
-          at(r, a + span / Math.max(r, .01))], white, n % 3 ? c.line : ink, 1, n % 3 ? .8 : 1.15);
+        const dx = Math.cos(a), dy = Math.sin(a);
+        polygon([[x + dx * (r - radial), y + dy * (r - radial)],
+          [x + dx * r + dy * span, y + dy * r - dx * span],
+          [x + dx * (r + radial), y + dy * (r + radial)],
+          [x + dx * r - dy * span, y + dy * r + dx * span]],
+        white, n % 3 ? c.line : ink, 1, n % 3 ? .8 : 1.15);
       }
       const center = section(q, .15, .72);
       if (center > 0) {
@@ -111,24 +126,27 @@
         ctx.strokeStyle = ink; ctx.lineWidth = Math.max(css(.55), 1.1); ctx.stroke();
       }
       ring(x, y, radius * 1.35, section(q, .20, .94), c.line, .72);
-      star(x, y, radius * .25, 8, section(q, .36, 1), -turn * .55, false);
+      star(x, y, radius * .25, 8, section(q, .36, 1), -turn * .55 - ambient * .045, false);
     }
     function moon(x, y, radius, q, turn) {
       if (q <= 0) return;
       const r = radius * mix(.54, 1, q);
-      ctx.save(); ctx.translate(x, y); ctx.rotate(turn);
+      const sway = Math.sin(ambient * .43) * .105 * q;
+      ctx.save(); ctx.translate(x, y); ctx.rotate(turn + sway);
       ctx.beginPath(); ctx.moveTo(r * .48, -r * .87);
       ctx.bezierCurveTo(-r * 1.38, -r * .90, -r * 1.38, r * .90, r * .48, r * .87);
       ctx.bezierCurveTo(-r * .48, r * .35, -r * .48, -r * .35, r * .48, -r * .87);
       ctx.closePath(); ctx.globalAlpha = 1; ctx.fillStyle = white; ctx.fill();
       ctx.strokeStyle = ink; ctx.lineWidth = Math.max(css(.6), 1.25); ctx.stroke();
       ring(0, 0, r * 1.38, section(q, .12, .94), c.line, .75);
-      const orbit = (1 - q) * Math.PI * 1.45;
-      star(Math.cos(orbit) * r * .46, Math.sin(orbit) * r * .46, r * .33, 4, section(q, .16, .92), -turn);
+      const orbit = (1 - q) * Math.PI * 1.45 + ambient * .78 * q;
+      star(Math.cos(orbit) * r * .46, Math.sin(orbit) * r * .46, r * .33, 4, section(q, .16, .92), -turn - sway);
       ctx.restore();
     }
     function haloCross(x, y, radius, q) {
-      ring(x, y, radius * .48, q, ink, .52);
+      const turn = ambient * .12;
+      ring(x, y, radius * .48, q, ink, .52, .9, turn, Math.PI * .68);
+      ring(x, y, radius * .48, q, ink, .52, .9, turn + Math.PI, Math.PI * .68);
       for (let n = 0; n < 4; n++) {
         const a = n * Math.PI / 2, dx = Math.cos(a), dy = Math.sin(a);
         stroke([[x + dx * radius * .15, y + dy * radius * .15], [x + dx * radius, y + dy * radius]], q, ink, .65);
@@ -142,7 +160,7 @@
         return [x + Math.cos(a) * r, y + Math.sin(a) * r];
       });
       stroke(points, q, ink, .65);
-      star(x, y, radius * .28, 3, q, 0, true);
+      star(x, y, radius * .28, 3, q, -ambient * .15, true);
     }
     function avoidHeading(x, y, radius, side, head) {
       const gap = 14 / oldUnit * projection, margin = 10 / oldUnit * projection;
@@ -182,11 +200,14 @@
     }
     function emblemPose(side, initialRadius, order) {
       const q = sourceArrival(order), r = initialRadius * size;
-      const raw = side < 0 ? [-SW * (wide ? .305 : .325) - (1 - q) * 82 * size,
-        -SH * .345 + (1 - q) * 68 * size] :
-        [SW * (wide ? .305 : .335) + (1 - q) * 74 * size,
-          (wide ? -SH * .345 : SH * .257) + (1 - q) * 38 * size];
-      const origin = avoidHeading(...raw, r * 1.7, side, book ? state.sourceHeading || state.heading : state.heading);
+      const raw = side < 0 ? [-SW * (wide ? .305 : .325), -SH * .345] :
+        [SW * (wide ? .305 : .335), wide ? -SH * .345 : SH * .257];
+      const anchor = avoidHeading(...raw, r * 1.7, side, book ? state.sourceHeading || state.heading : state.heading);
+      // Solar descent and lunar ascent are intentionally different entrances.
+      // Avoidance is chosen from the settled pose, so crossing a title boundary
+      // cannot suddenly change which side of the title an object occupies.
+      const origin = [anchor[0] + Math.sin((1 - q) * Math.PI) * (side < 0 ? 42 : -31) * size,
+        anchor[1] + (side < 0 ? -104 : 112) * (1 - q) * size];
       if (!book) return { point: origin, radius: r, turn: side * (1 - q) * .9 };
       const leaf = folio.leaves[side < 0 ? 0 : 1], outer = side < 0 ? leaf.left + W / 2 : W / 2 - leaf.right;
       // Fixed outside page clasps cannot jump when a new real list row arrives.
@@ -244,7 +265,8 @@
         const end = Math.PI + (bay + 1) * Math.PI / 8 - .028;
         const q0 = sourceArrival(1 + bay % 3), q = arrived(1 + bay % 3);
         const points = Array.from({ length: 13 }, (_, n) => {
-          const t = n / 12, a = mix(start, end, t), offset = (1 - q0) * (bay % 2 ? 76 : -76) * size;
+          const t = n / 12, a = mix(start, end, t) + (1 - q0) * (band ? -.24 : .24);
+          const offset = (1 - q0) * (bay % 2 ? 32 : -32) * size;
           const origin = [Math.cos(a) * (rx + band * 9 * size), cy + Math.sin(a) * (ry + band * 9 * size) + offset];
           const lane = side < 0 ? 1 - (bay + t) / 4 : (bay - 4 + t) / 4;
           return migrate(origin, edge(side, lane, css(3 + band * 3)), side, bay % 4 + band);
@@ -252,7 +274,8 @@
         stroke(points, q, band ? c.line : ink, band ? .65 : .42);
       }
       for (let n = 0; n < 11; n++) {
-        const a = Math.PI + (n + .5) * Math.PI / 11, q0 = sourceArrival(3 + n % 3);
+        const q0 = sourceArrival(3 + n % 3);
+        const a = Math.PI + (n + .5) * Math.PI / 11 + (1 - q0) * (n % 2 ? -.40 : .32);
         const side = n < 5 ? -1 : 1, target = edge(side, side < 0 ? 1 - (n + .5) / 5.5 : (n - 5) / 5.5, css(4.5));
         const origin = [Math.cos(a) * (rx + (1 - q0) * 62 * size),
           cy + Math.sin(a) * (ry + (1 - q0) * 62 * size)];
@@ -268,16 +291,34 @@
           [x + side * spread * .55, y - 25 * size], [x - side * spread * .25, y + 32 * size],
           [x + side * spread * .64, y + 91 * size]];
         const q0 = sourceArrival(4 + (side > 0 ? 1 : 0)), q = arrived(4 + (side > 0 ? 1 : 0));
-        const points = nodes.map(([xx, yy], n) => migrate([xx + (1 - q0) * side * 112 * size, yy],
-          edge(side, .10 + n * .195, css(8 + (n % 2) * 2)), side, 5 + n));
-        stroke(points, q, c.line, .85, 1.05);
+        const points = nodes.map(([xx, yy], n) => {
+          const order = side < 0 ? n : 4 - n;
+          const node = section(q0, order * .08, .62 + order * .075);
+          return migrate([xx + Math.sin((1 - node) * Math.PI) * side * 21 * size,
+            yy + (side < 0 ? -100 : 105) * (1 - node) * size],
+          edge(side, .10 + n * .195, css(8 + (n % 2) * 2)), side, 5 + n);
+        });
+        stroke(side < 0 ? points : points.slice().reverse(), q, c.line, .85, 1.05);
         points.forEach((p, n) => {
-          const t = section(q, n * .07, .60 + n * .07);
+          const order = side < 0 ? n : 4 - n;
+          const t = section(q, order * .08, .62 + order * .075);
           const small = book ? section(age, .72, 2.35) : 0;
           star(...p, mix((n % 2 ? 8 : 5) * size, css(2.5), small), n === 2 ? 8 : 4, t,
             side * (1 - t) * Math.PI * .7, n % 2 === 0);
           if (n === 1 || n === 3) ring(...p, mix(12 * size, css(4), small), t, c.line, .75);
         });
+        // Two small couriers are purely ornamental: they follow the existing
+        // star chains even when no inventory is loading and imply no progress.
+        const courier = section(q, .78, 1);
+        if (courier > 0) {
+          const position = (.5 - Math.cos(ambient * .34 + (side < 0 ? 0 : Math.PI)) * .5) * (points.length - 1);
+          const segment = Math.min(points.length - 2, Math.floor(position)), fraction = position - segment;
+          const x = mix(points[segment][0], points[segment + 1][0], fraction);
+          const y = mix(points[segment][1], points[segment + 1][1], fraction);
+          const radius = mix(3 * size, css(1.65), book ? section(age, .72, 2.35) : 0) * courier;
+          ctx.beginPath(); ctx.arc(x, y, radius, 0, TAU); ctx.globalAlpha = 1;
+          ctx.fillStyle = white; ctx.fill(); ctx.strokeStyle = ink; ctx.lineWidth = css(.65); ctx.stroke();
+        }
         if (wide) {
           const open = book ? section(age, .70, 2.30) : 0;
           const position = migrate([x, SH * .27], edge(side, side < 0 ? .84 : .12, css(5)), side, 6);
@@ -294,7 +335,8 @@
       // Three white pieces become the top register, fixed to the real spine.
       for (let n = 0; n < 3; n++) {
         const side = n === 0 ? -1 : 1, q0 = sourceArrival(5), q = arrived(5);
-        const point = migrate([(n - 1) * 26 * size, -SH * .402 - (1 - q0) * 35 * size],
+        const point = migrate([(n - 1) * (26 + Math.sin(q0 * Math.PI) * 36) * size,
+          -SH * .402 + (n === 1 ? 1 : -1) * (1 - q0) * 80 * size],
           [folio.center + (n - 1) * css(9), folio.top - css(8)], side, 7 + n);
         const open = book ? section(age, .75, 2.30) : 0;
         star(...point, mix((n === 1 ? 10 : 4) * size, css(n === 1 ? 4 : 2), open),

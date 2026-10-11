@@ -38,7 +38,7 @@ function motionStyle(node,key,value){
 let soundTouched=false,soundInitialized=false;
 let audio=null,master=null,audioSources=[],audioUnavailable=false;
 let phaseAge=0,visiblePhase=-1,starting=false;
-let scenePhase=-1,paintedPhase=-1,paintedProgress=0,sceneAge=0,bookAge=0,bookSource=null,transitionAge=1;
+let scenePhase=-1,paintedPhase=-1,paintedProgress=0,paintedAmbientTime=0,sceneAge=0,bookAge=0,bookSource=null,transitionAge=1;
 const smoothStep=value=>{const t=Math.max(0,Math.min(1,value));return t*t*(3-2*t);};
 const entryAnimations=new Map();
 let raf=0,lastFrame=0,generation=0,ambientTime=0,impulse=0,drag=0,manualPause=false,signature='',pointer={x:.5,y:.5},pointerDown=null,embeddedEnded=false;
@@ -175,7 +175,8 @@ function beginScene(){
  if(bindingBook&&paintedPhase===2){
   // Retain vector geometry, not a raster screenshot: the measured portal is
   // recomposed into the binding and cover by the incoming folio renderer.
-  bookSource={phase:2,layout:sceneLayout,viewport:{width,height},progress:paintedProgress};
+  // Use the last painted clock, not the clock already advanced by this frame.
+  bookSource={phase:2,layout:sceneLayout,viewport:{width,height},progress:paintedProgress,ambientTime:paintedAmbientTime};
  }else if(!continuingBook)bookSource=null;
  if(visualStyle==='laterano'&&paintedPhase===scenePhase&&scenePhase>=0&&!continuingBook&&!bindingBook&&!manualPause&&!reducedMotion.matches&&transitionCtx){
   transitionCanvas.width=canvas.width;transitionCanvas.height=canvas.height;
@@ -200,7 +201,7 @@ function drawScene(){
  ctx.setTransform(dpr,0,0,dpr,0,0);
  const renderer=laterano&&window.DSHLateranoVisuals?window.DSHLateranoVisuals:DSHVisuals;
  renderer.draw(ctx,width,height,{phase:sequence.phase,progress:sequence.progress,visualProgress:laterano?visualProgress:undefined,bookAge:laterano?bookAge:undefined,bookSource:laterano?bookSource:undefined,bookOpen:laterano?bookOpen:undefined,time:sequence.time,textAge:laterano?(inBook?bookAge:sceneAge):manualPause?sequence.elapsed:Math.max(sequence.elapsed,phaseAge),choice:sequence.choices[Math.min(4,sequence.phase)]||0,light,reducedMotion:reducedMotion.matches,pointer,ambientTime,impulse,drag,waiting:sequence.waiting,identity:ui.identityName.value.trim()||local.profile.username,inventory:local.inventory,layout:sceneLayout});
- paintedPhase=sequence.phase;paintedProgress=visualProgress;
+ paintedPhase=sequence.phase;paintedProgress=visualProgress;paintedAmbientTime=ambientTime;
 }
 function applyVisualStyle(value){
   const next=value==='laterano'?'laterano':'rhine';
@@ -409,7 +410,7 @@ document.addEventListener('keydown',e=>{
  if(e.key.toLowerCase()==='c'){e.preventDefault();settings(ui.controlPanel.hidden);return;}
  if(e.key.toLowerCase()==='m'){e.preventDefault();toggleSound();return;}
  if(e.key.toLowerCase()==='r'){e.preventDefault();restart();return;}
- if(e.key.toLowerCase()==='p'){e.preventDefault();sequence.playing?pause():start();return;}
+ if(e.key.toLowerCase()==='p'){e.preventDefault();manualPause?start():pause();return;}
  if(/^[123]$/.test(e.key)){e.preventDefault();if(sequence.choose(Number(e.key)-1)){impulse=.8;refresh();announce('已切换扫描通道 '+e.key);}return;}
  if((e.key==='ArrowLeft'||e.key==='ArrowRight')&&sequence.phase<5){e.preventDefault();sequence.choose((sequence.choices[sequence.phase]+(e.key==='ArrowRight'?1:2))%3);impulse=.5;refresh();return;}
  if((e.key==='Enter'||e.key===' ')&&!e.target.closest('button')){e.preventDefault();activate();}
