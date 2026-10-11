@@ -114,7 +114,7 @@ def main() -> None:
                 html = request("/startup-preview.html").decode("utf-8")
                 assert "/__dsh_startup/bridge.js" in html
                 assert "startup-laterano.js" in html
-                for asset in ("/startup-laterano.js", "/startup-laterano-emblem.js", "/startup-laterano.css"):
+                for asset in ("/startup-laterano.js", "/startup-laterano-ornaments.js", "/startup-laterano-emblem.js", "/startup-laterano.css"):
                     assert len(request(asset)) > 100
                 assert len(request("/assets/voice/phase-3-mounted.wav")) > 1000
                 assert len(request("/assets/fonts/dsh-industrial-sc.woff2")) > 1000

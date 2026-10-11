@@ -146,6 +146,10 @@ dsh web --startup                           # 网页端
 
 独立预览的 `?style=laterano` 可在未连接本地服务时演示新风格；连接后以真实保存的资料为准。原创轮廓分别位于 `docs/startup-emblem.js` 和 `docs/startup-laterano-emblem.js`，运行 `node scripts/export_startup_emblem.cjs`、`python scripts/export_desktop_icon.py` 可重新生成匹配的 SVG、终端轮廓与 Windows 图标。
 
+拉特兰高清背景的日轮、月牙、星座连线、八芒星、环十字与三叶结饰由 [`docs/startup-laterano-ornaments.js`](docs/startup-laterano-ornaments.js) 原生绘制。身份页采用长直柱、短尖券、双联窗棂与分层拱框构成轻盈的教堂窗式轮廓；天象图层逐段描线、错位归拢，保持明亮的平面线稿。进入能力书页时，窗棂与拱框连续变为页缘和书脊，日月星收束到书外边缘。背景按实际标题、身份卡和清单边界避让；缩小窗口优先保留主体和可读正文，减少动态效果时直接呈现完整构图。网页、Rust 桌面端与下文的官方 DSH 独立插件均使用同一份高清资源。
+
+![拉特兰教堂尖拱与日月星背景（离线设计预览）](docs/assets/laterano-cathedral-preview.png)
+
 ### 桌面、网页与 TUI 如何使用
 
 **Rust 桌面端与网页端共用同一套高清动画**：两者都使用 `StartupSurface` 加载同一份启动页面、Canvas 图形、文字动效、音频和真实本地读取接口。花纹的构造、重组与切幕一致，无需分别选择或维护两份设计。身份卡、密码输入和 Skills／Plugins 清单始终保持可读，装饰按实际边界避让。

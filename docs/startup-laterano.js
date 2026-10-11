@@ -232,6 +232,61 @@
       arc(x - half, spring, half * 2, Math.PI * 5 / 3, Math.PI * 5 / 3 + Math.PI / 3 * curve, ink, alpha, weight);
       for (const side of [-1, 1]) line(x + side * half, spring, x + side * half, lerp(spring, base, legs), ink, alpha, weight);
     }
+    function inkPath(points, ink, alpha, weight) {
+      if (alpha <= 0 || points.length < 2) return;
+      ctx.globalAlpha = clamp(alpha); ctx.strokeStyle = ink; ctx.lineWidth = weight;
+      ctx.beginPath(); points.forEach(([xx, yy], index) => index ? ctx.lineTo(xx, yy) : ctx.moveTo(xx, yy));
+      ctx.stroke(); ctx.globalAlpha = 1;
+    }
+    function churchArchPaths(pose, amount) {
+      // A vertical shoulder tangent and two meeting crown tangents form a
+      // pointed church window. Crown height is independent of the clear span:
+      // the upright shafts survive even in a short, wide viewport.
+      const q = smooth(amount), curve = Math.min(1, q * 1.5), legs = smooth(section(q, .43, 1));
+      return [-1, 1].map(side => {
+        const shoulder = pose.x + side * pose.half, apex = pose.spring - pose.rise;
+        const crown = Array.from({ length: 33 }, (_, index) => {
+          const t = index / 32 * curve;
+          return [cubic(shoulder, shoulder, pose.x + side * pose.half * .31, pose.x, t),
+            cubic(pose.spring, pose.spring - pose.rise * .53, apex + pose.rise * .22, apex, t)];
+        });
+        return { side, leg: [[shoulder, lerp(pose.spring, pose.base, legs)], [shoulder, pose.spring]], crown };
+      });
+    }
+    function portalTracery(architecture, amount) {
+      const paths = [], { x, spring, base, half, insetStep, windowSpan, columnOffset, designUnit } = architecture;
+      const arrival = smooth(section(amount, .31, .79));
+      for (const side of [-1, 1]) {
+        const shoulderX = x + side * (half + insetStep);
+        for (let rail = 0; rail < 3; rail++) {
+          const y = spring + (rail - 1) * 5 * designUnit;
+          const length = (rail === 1 ? 17 : 11) * designUnit * arrival;
+          paths.push({ side, kind: 'rail', points: [[shoulderX - length, y], [shoulderX + length, y]] });
+        }
+        if (windowSpan <= 10 * designUnit) continue;
+        const near = x + side * (half + insetStep * 2 + 8 * designUnit);
+        const windowHalf = windowSpan * .20;
+        for (let bay = 0; bay < 2; bay++) {
+          const xx = near + side * windowSpan * (.25 + bay * .50);
+          const windowSpring = spring + windowHalf * (bay ? 2.10 : 1.55);
+          const pose = { x: xx, spring: windowSpring, half: windowHalf,
+            rise: windowHalf * (bay ? 1.85 : 1.55), base: base - 12 * designUnit };
+          for (const arch of churchArchPaths(pose, section(amount, .31 + bay * .045, .79 + bay * .045))) {
+            paths.push({ side, kind: 'shaft', points: arch.leg });
+            paths.push({ side, kind: 'crown', points: arch.crown });
+          }
+        }
+        const sillY = base - 9 * designUnit;
+        paths.push({ side, kind: 'rail', points: [[near, sillY],
+          [lerp(near, x + side * (columnOffset - 6 * designUnit), arrival), sillY]] });
+      }
+      return paths;
+    }
+    function portalConstructionPaths(architecture, amount) {
+      return churchArchPaths({ x: architecture.x, spring: architecture.spring,
+        half: architecture.half + architecture.insetStep * 3,
+        rise: architecture.rise + 10 * architecture.detailScale, base: architecture.base }, amount);
+    }
     function rose(x, y, radius, amount = 1, alpha = 1) {
       const q = smooth(section(amount, 0, .38));
       arc(x, y, radius, -Math.PI / 2, -Math.PI / 2 + TAU * q, accent, alpha * .8, 1);
@@ -270,26 +325,28 @@
       const detail = clamp(Math.min(cardWidth, cardHeight * 2.2) / 600, .65, 1.18) * Math.min(1, 1.35 / u);
       const capacity = Math.max(8, space.width / 2 - Math.abs(x) - safe);
       const sideRoom = Math.max(0, capacity - cardWidth / 2);
-      const capitalRadius = Math.max(2 / u, Math.min(42 * detail, sideRoom * .42));
+      const capitalRadius = Math.max(2 / u, Math.min(25 * detail, sideRoom * .24));
       const insetStep = Math.min(14 * detail, Math.max(2 / u, sideRoom * .12));
       const top = -space.height / 2 + safe;
-      const minSpring = box.top + Math.min(55 * detail, cardHeight * .20);
-      const maxSpring = Math.max(minSpring, box.bottom - 20 * detail);
-      const half = Math.max(8, Math.min(cardWidth / 2 + sideRoom * .20,
-        capacity - insetStep * 2, (maxSpring - top) / ROOT3 - insetStep * 2));
-      const columnOffset = Math.max(0, Math.min(capacity - capitalRadius, half + 35 * detail));
-      const spring = Math.min(maxSpring, Math.max(minSpring, top + ROOT3 * (half + insetStep * 2)));
       const base = Math.min(box.bottom + 28 * detail, space.height / 2 - 18 / u);
-      const capitalY = Math.min(Math.max(box.top + cardHeight * .24, head.bottom + capitalRadius + 10 / u),
-        Math.max(top + capitalRadius, base - capitalRadius - 10 * detail));
-      const columnTop = Math.min(base, capitalY + capitalRadius + 8 * detail);
+      const apex = top + Math.min(30 * detail, Math.max(0, head.top - top) * .14);
+      const half = Math.max(8, Math.min(cardWidth / 2 + Math.min(72 * detail, sideRoom * .18), capacity - insetStep * 2));
+      const rise = Math.max(8 * detail, Math.min(half * 1.08, (base - apex) * .38,
+        Math.max(8 * detail, box.top - apex - 10 / u)));
+      const spring = apex + rise;
+      const windowSpan = Math.max(0, Math.min(64 * detail, capacity - capitalRadius - half - insetStep * 2 - 20 * detail));
+      const columnOffset = Math.max(0, Math.min(capacity - capitalRadius,
+        half + insetStep * 2 + windowSpan + 20 * detail));
+      const capitalY = Math.max(top + capitalRadius, spring - capitalRadius * .30);
+      const columnTop = Math.min(base, spring + capitalRadius * .75);
       const crestRoom = Math.max(0, head.top - top - 8 / u);
       const crestRadius = Math.min(65 * detail, crestRoom / 2.3);
-      const crestY = clamp(spring - ROOT3 * half + 55 * detail,
+      const crestY = clamp(apex + rise * .32,
         top + crestRadius * 1.1, Math.max(top + crestRadius * 1.1, head.top - crestRadius * 1.1 - 8 / u));
       const seedRadius = Math.min(28 / u, Math.max(7 / u, Math.min(cardWidth, cardHeight) * .105));
       const seedLimit = Math.max(0, space.width / 2 - seedRadius * 1.4 - 10 / u);
-      return { x, half, spring, base, capitalY, columnTop, columnOffset, capitalRadius,
+      return { x, half, spring, rise, base, capitalY, columnTop, columnOffset, capitalRadius, windowSpan,
+        columnHalfWidth: Math.min(2 / u, 1.5 * detail),
         crestRadius, crestY, insetStep, detailScale: detail, designUnit: 1, pixelUnit: 1 / u,
         sway: Math.min(136 * detail, space.width * .10), lift: Math.min(130 * detail, cardHeight * .44),
         seedRadius, seedLeft: clamp(x - columnOffset, -seedLimit, seedLimit),
@@ -315,9 +372,11 @@
     }
     function archPose(architecture, inset, amount) {
       const lock = smooth(section(amount, .03 + inset * .055, .58 + inset * .06));
-      const { x, spring, half, base, insetStep, sway, lift } = architecture;
+      const { x, spring, rise, half, base, insetStep, sway, lift } = architecture;
       return { x: x + (inset - 1) * sway * (1 - lock), spring: spring + lift * (1 - lock),
-        half: (half + inset * insetStep) * (1 + .15 * (1 - lock)), base: base + lift * .40 * (1 - lock) };
+        half: (half + inset * insetStep) * (1 + .15 * (1 - lock)),
+        rise: Math.max(4 * architecture.designUnit, rise - inset * insetStep * .24) * (1 + .10 * (1 - lock)),
+        base: base + lift * .40 * (1 - lock) };
     }
     function identitySealAnchor(architecture, amount, index) {
       const side = index ? 1 : -1;
@@ -705,21 +764,25 @@
         floralMargins(2);
         page('III', .055);
         const construction = smooth(section(progress, 0, .27));
-        for (const side of [-1, 1]) {
-          arc(x + side * half, spring, 2 * half, Math.PI * 1.05, Math.PI * 1.05 + Math.PI * .90 * construction, color.line, .30, .8);
+        for (const path of portalConstructionPaths(architecture, construction)) {
+          inkPath(path.crown, color.line, .30, .8);
+          const side = path.side;
           dot(x + side * half, spring, 3, accent, construction);
         }
-        line(x - half * 1.5, spring, x + half * 1.5, spring, color.line, construction * .36, .8);
-        line(x, spring - ROOT3 * half - 32, x, base + 12, color.line, construction * .36, .8);
+        line(x, spring - architecture.rise - 12, x, base + 12, color.line, construction * .24, .8);
         for (let inset = 0; inset < 3; inset++) {
           const pose = archPose(architecture, inset, progress);
-          pointedArch(pose.x, pose.spring, pose.half, pose.base, section(progress, .19 + inset * .04, .70 + inset * .035),
-            inset === 1 ? .88 : .45, inset === 1 ? 2.3 : .8, inset === 1 ? accent : color.line);
+          const ink = inset === 1 ? accent : color.line, alpha = inset === 1 ? .88 : .45, weight = inset === 1 ? 2.3 : .8;
+          for (const path of churchArchPaths(pose, section(progress, .19 + inset * .04, .70 + inset * .035))) {
+            inkPath(path.leg, ink, alpha, weight); inkPath(path.crown, ink, alpha, weight);
+          }
         }
+        for (const path of portalTracery(architecture, progress)) inkPath(path.points, accent, .58, 1.05);
         const locked = smooth(section(progress, .57, .81));
         for (const side of [-1, 1]) {
           const column = x + side * columnOffset;
-          rect(column - 4, columnTop, 8, Math.max(0, base - columnTop) * locked, color.ink, .94);
+          rect(column - architecture.columnHalfWidth, columnTop, architecture.columnHalfWidth * 2,
+            Math.max(0, base - columnTop) * locked, accent, .70);
           line(column - 12, base, column + 12, base, color.ink, locked, 2);
           if (wide) type(side < 0 ? 'IDENTITY' : 'CLEARANCE', column + side * 35, (box.top + box.bottom) / 2,
             10, color.soft, locked, 2, side < 0 ? 'right' : 'left');
@@ -827,70 +890,67 @@
       };
       outside([movingHole(sourceIdentity)], () => {
         for (let inset = 0; inset < 3; inset++) {
-          const pose = archPose(architecture, inset, srcProgress), radius = pose.half;
-          const sourceAmount = smooth(section(srcProgress, .19 + inset * .04, .70 + inset * .035));
-          const curve = Math.min(1, sourceAmount * 1.5), legs = smooth(section(sourceAmount, .43, 1));
+          const pose = archPose(architecture, inset, srcProgress);
+          const paths = churchArchPaths(pose, section(srcProgress, .19 + inset * .04, .70 + inset * .035));
           for (let index = 0; index < 2; index++) {
-            const side = index ? 1 : -1, leaf = folio.leaves[index], points = [];
+            const side = index ? 1 : -1, leaf = folio.leaves[index], path = paths[index];
             const lag = inset * .035 + index * .02;
             const bindingPoint = t => [folio.center + side * (4 + inset * 3), lerp(folio.bottom + 12, folio.top + 10, t)];
-            const legPoints = [
-              phasePoint([pose.x + side * radius, lerp(pose.spring, pose.base, legs)], bindingPoint(0), pageRim(folio, leaf, side, 0, 3 + inset * 4), lag),
-              phasePoint([pose.x + side * radius, pose.spring], bindingPoint(.22), pageRim(folio, leaf, side, .22, 3 + inset * 4), lag),
-            ];
-            trace(legPoints, 1, inset === 1 ? accent : color.line, inset === 1 ? .88 : .45, inset === 1 ? 2.3 : .8);
-            // Fixed cardinality makes the entire arc-to-paper transformation
-            // continuous even while the previous gate is still constructing.
-            for (let point = 0; point <= 32; point++) {
-              const q = point / 32, t = .22 + q * .78;
-              // The right source arc grows from the apex towards its spring;
-              // preserving that opposite direction matters for early skips.
-              const a = (index ? 1 - curve + curve * q : q * curve) * Math.PI / 3;
-              const start = [pose.x + side * (2 * radius * Math.cos(a) - radius), pose.spring - Math.sin(a) * radius * 2];
-              points.push(phasePoint(start, bindingPoint(t), pageRim(folio, leaf, side, t, 3 + inset * 4), lag));
-            }
-            trace(points, 1, inset === 1 ? accent : color.line, inset === 1 ? .88 : .45, inset === 1 ? 2.3 : .8);
+            const legPoints = path.leg.map((point, i) => phasePoint(point, bindingPoint(i * .22),
+              pageRim(folio, leaf, side, i * .22, 3 + inset * 4), lag));
+            const crownPoints = path.crown.map((point, i) => {
+              const t = .22 + i / (path.crown.length - 1) * .78;
+              return phasePoint(point, bindingPoint(t), pageRim(folio, leaf, side, t, 3 + inset * 4), lag);
+            });
+            const ink = inset === 1 ? accent : color.line, alpha = inset === 1 ? .88 : .45, weight = inset === 1 ? 2.3 : .8;
+            inkPath(legPoints, ink, alpha, weight); inkPath(crownPoints, ink, alpha, weight);
           }
         }
-        // The two construction circles are resampled into the two long
-        // stitched cords. Their ink survives at the finished centre seam.
-        for (const side of [-1, 1]) {
-          const points = [];
-          for (let point = 0; point <= 40; point++) {
-            const t = point / 40, a = Math.PI * (1.05 + .90 * t * sourceConstruction);
-            const sourcePoint = [x + side * half + Math.cos(a) * half * 2, spring + Math.sin(a) * half * 2];
+        // The light construction archivolts become two stitched cords; the
+        // exact same source paths also draw the preceding identity chapter.
+        for (const path of portalConstructionPaths(architecture, sourceConstruction)) {
+          const side = path.side;
+          const points = path.crown.map((sourcePoint, index) => {
+            const t = index / (path.crown.length - 1);
             const target = [folio.center + side * (3 + Math.sin(t * Math.PI * 10) * 2), lerp(folio.top + 10, folio.bottom + 12, t)];
-            points.push(phasePoint(sourcePoint, target, target));
-          }
-          trace(points, 1, color.line, .30, .8);
+            return phasePoint(sourcePoint, target, target);
+          });
+          inkPath(points, color.line, .30, .8);
           const sourceDot = [x + side * half, spring], targetDot = [folio.center + side * 8, folio.top + 17];
           const point = phasePoint(sourceDot, targetDot, targetDot);
           dot(point[0], point[1], lerp(3 * architecture.designUnit, 2.1, gather), accent,
             lerp(sourceConstruction, 1, gather));
         }
-        const sourceLines = [
-          [[x - half * 1.5, spring], [x + half * 1.5, spring]],
-          [[x, spring - ROOT3 * half - 32 * architecture.designUnit], [x, base + 12 * architecture.designUnit]],
-        ];
-        sourceLines.forEach((points, index) => {
-          const target = index ? [[folio.center, folio.top - 5], [folio.center, folio.bottom + 23]] :
-            [[folio.center - 6, folio.top + 8], [folio.center + 6, folio.bottom + 13]];
+        const sourceLines = [[[x, spring - architecture.rise - 12 * architecture.designUnit], [x, base + 12 * architecture.designUnit]]];
+        sourceLines.forEach(points => {
+          const target = [[folio.center, folio.top - 5], [folio.center, folio.bottom + 23]];
           const ends = points.map((point, i) => phasePoint(point, target[i], target[i]));
-          line(...ends[0], ...ends[1], index ? color.ink : color.line,
-            index ? lerp(.36 * sourceConstruction, .88, gather) : lerp(.36 * sourceConstruction, .36, gather), index ? 1.2 : .8);
+          line(...ends[0], ...ends[1], color.line, lerp(.24 * sourceConstruction, .88, gather), lerp(.8, 1.2, gather));
+        });
+        portalTracery(architecture, srcProgress).forEach((path, index) => {
+          const side = path.side, leaf = folio.leaves[side > 0 ? 1 : 0];
+          const edge = side > 0 ? leaf.right : leaf.left, lane = 3 + index % 4 * 2;
+          const points = path.points.map((point, pointIndex) => {
+            const q = pointIndex / (path.points.length - 1);
+            const binding = [folio.center + side * lane, lerp(folio.bottom + 9, folio.top + 10, q)];
+            const target = path.kind === 'rail' ? [edge + side * (5 + q * 8), leaf.bottom + 6 + index % 3 * 3] :
+              path.kind === 'crown' ? [folio.center + side * (lane + Math.sin(q * Math.PI) * 2), folio.top + 4 + q * 24] : binding;
+            return phasePoint(point, binding, target, .025 + index % 2 * .02);
+          });
+          inkPath(points, accent, .58, 1.05);
         });
         for (let index = 0; index < 2; index++) {
           const side = index ? 1 : -1, column = x + side * columnOffset, leaf = folio.leaves[index];
           const edge = index ? leaf.right : leaf.left;
           const columnBottom = lerp(columnTop, Math.max(columnTop, base), sourceLocked);
-          const columnHalfWidth = 4 * architecture.designUnit;
+          const columnHalfWidth = architecture.columnHalfWidth;
           const startCorners = [[column - columnHalfWidth, columnTop], [column + columnHalfWidth, columnTop],
             [column + columnHalfWidth, columnBottom], [column - columnHalfWidth, columnBottom]];
           const bindCorners = [[folio.center + side * 11 - 3, folio.top + 7], [folio.center + side * 11 + 3, folio.top + 7],
             [folio.center + side * 11 + 3, folio.bottom + 18], [folio.center + side * 11 - 3, folio.bottom + 18]];
           const coverCorners = [[edge + side * 7, leaf.top + 9], [edge + side * 13, leaf.top + 9],
             [edge + side * 13, leaf.bottom - 5], [edge + side * 7, leaf.bottom - 5]];
-          polygon(startCorners.map((point, i) => phasePoint(point, bindCorners[i], coverCorners[i])), color.ink, .94);
+          polygon(startCorners.map((point, i) => phasePoint(point, bindCorners[i], coverCorners[i])), accent, .70);
           const baseStart = phasePoint([column - 12 * architecture.designUnit, base],
             [folio.center - 8, folio.bottom + 17], [edge - side * 4, leaf.bottom + 13]);
           const baseEnd = phasePoint([column + 12 * architecture.designUnit, base],
@@ -1337,6 +1397,9 @@
       ctx.lineCap = 'butt'; ctx.lineJoin = 'miter'; ctx.setLineDash([]);
       ctx.fillStyle = color.paper; ctx.fillRect(0, 0, width, height);
       ctx.translate(width / 2, height / 2); ctx.scale(unit, unit);
+      window.DSHLateranoOrnaments?.draw(ctx, { width: W, height: H, unit, phase, progress, ambient, reduced,
+        bookAge, sourceProgress: state.bookSource?.progress, sourceHeading, palette: color, accent, heading: headingBox,
+        identity: identityBox, inventory: inventoryBox, book: bookBox });
       [sealScene, linkScene, identityScene, () => archiveScene(false), () => archiveScene(true), readyScene][phase]();
       const exclusion = phase === 2 ? [identityBox] : phase === 3 || phase === 4 ? [inventoryBox] : [];
       outside(exclusion, interaction);

@@ -396,6 +396,10 @@ fn asset(path: &str) -> Option<(&'static str, &'static str)> {
             "text/javascript; charset=utf-8",
             include_str!("../../../docs/startup-laterano-emblem.js"),
         )),
+        "/startup-laterano-ornaments.js" => Some((
+            "text/javascript; charset=utf-8",
+            include_str!("../../../docs/startup-laterano-ornaments.js"),
+        )),
         "/startup-laterano.js" => Some((
             "text/javascript; charset=utf-8",
             include_str!("../../../docs/startup-laterano.js"),
@@ -1091,7 +1095,7 @@ mod tests {
         let (_, access) = http(host, "GET", "/api/access", Value::Null, false).await;
         assert_eq!(access["profile"]["visual_style"], "laterano");
         assert_eq!(http(host, "GET", "/api/profile", Value::Null, false).await.1["visual_style"], "laterano");
-        for path in ["/startup-laterano-emblem.js", "/startup-laterano.js", "/startup-laterano.css"] {
+        for path in ["/startup-laterano-emblem.js", "/startup-laterano-ornaments.js", "/startup-laterano.js", "/startup-laterano.css"] {
             assert!(asset(path).is_some(), "{path}");
         }
     }

@@ -8,7 +8,7 @@ const { createHash } = require('node:crypto');
 
 const sandbox = { window: {} };
 vm.createContext(sandbox);
-for (const name of ['startup-laterano-emblem.js', 'startup-text.js', 'startup-laterano.js']) {
+for (const name of ['startup-laterano-emblem.js', 'startup-text.js', 'startup-laterano-ornaments.js', 'startup-laterano.js']) {
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../docs', name), 'utf8'), sandbox, { filename: name });
 }
 const { draw, phaseCount } = sandbox.window.DSHLateranoVisuals;
@@ -127,6 +127,87 @@ function distanceToSegments(point, segments) {
 }
 const inventory = { status: 'complete', skills: [{ name: 'actual-skill' }], plugins: [{ name: 'actual-plugin' }], issues: [] };
 const base = { identity: 'CatShark / 星海', inventory, choice: 1, pointer: [.82, .22], drag: .8, impulse: .35 };
+
+// Exercise the celestial layer through its actual public API and canvas state.
+// Its measured text holes are independent, so overlapping title/card rectangles
+// cannot cancel one another through even-odd parity.
+const ornamentsDraw = sandbox.window.DSHLateranoOrnaments?.draw;
+assert.equal(typeof ornamentsDraw, 'function', 'the shipped celestial module must be loaded by renderer tests');
+const skyPalette = { paper: '#f6f7f6', ink: '#101820', blue: '#195acc', line: '#a5bfd4', faint: '#dce6ed', soft: '#60768d', white: '#ffffff' };
+function renderSky(width, height, state = {}) {
+  const recorder = recordingContext(), unit = Math.min(width, height) / 1000;
+  const designBox = box => box ? { left: (box.x - width / 2) / unit, top: (box.y - height / 2) / unit,
+    right: (box.x + box.width - width / 2) / unit, bottom: (box.y + box.height - height / 2) / unit } : null;
+  recorder.ctx.save(); recorder.ctx.translate(width / 2, height / 2); recorder.ctx.scale(unit, unit);
+  ornamentsDraw(recorder.ctx, { width: width / unit, height: height / unit, unit, phase: 2, progress: 1,
+    ambient: 0, reduced: false, bookAge: 3, palette: skyPalette, accent: '#159dcc', ...state,
+    heading: designBox(state.heading), sourceHeading: designBox(state.sourceHeading), identity: designBox(state.identity), inventory: designBox(state.inventory) });
+  recorder.ctx.restore();
+  return { hash: recorder.finish(), records: recorder.records, paintings: recorder.paintings };
+}
+function textExclusion(paint, box) {
+  return paint.clips.find(clip => {
+    const rectangles = clip.commands.filter(command => command.op === 'rect');
+    if (clip.rule !== 'evenodd' || rectangles.length !== 2) return false;
+    const holes = rectangles.map(rectangle => {
+      const [x, y, w, h] = rectangle.args;
+      const top = screenPoint(rectangle, x, y), bottom = screenPoint(rectangle, x + w, y + h);
+      return { x: top[0], y: top[1], right: bottom[0], bottom: bottom[1], area: Math.abs(w * h) };
+    }).sort((a, b) => a.area - b.area);
+    return holes[0].x <= box.x && holes[0].y <= box.y && holes[0].right >= box.x + box.width && holes[0].bottom >= box.y + box.height;
+  });
+}
+for (const [width, height] of [[1280, 720], [390, 844], [2560, 360], [360, 1600]]) {
+  const heading = { x: width * .28, y: height * .20, width: width * .44, height: height * .20 };
+  const identity = { x: width * .29, y: height * .36, width: width * .42, height: height * .43 };
+  const inventoryBox = { x: width * .09, y: height * .37, width: width * .82, height: height * .49 };
+  for (const phase of [2, 3, 4]) {
+    const state = { phase, heading, identity, inventory: inventoryBox };
+    const full = renderSky(width, height, state), reading = phase === 2 ? identity : inventoryBox;
+    assert.ok(full.paintings.length > 0, 'the celestial background must actually paint vector ornaments');
+    for (const paint of full.paintings) {
+      const titleClip = textExclusion(paint, heading), readingClip = textExclusion(paint, reading);
+      assert.ok(titleClip && readingClip && titleClip !== readingClip,
+        'every celestial mark must keep independent exclusions for the overlapping real title and reading surface');
+    }
+    assert.equal(full.hash, renderSky(width, height, { ...state, ambient: 80, bookAge: 80 }).hash, 'completed celestial geometry must settle instead of orbiting through the text');
+    assert.equal(renderSky(width, height, { ...state, reduced: true, progress: 0, sourceProgress: 0, bookAge: 0 }).hash,
+      renderSky(width, height, { ...state, reduced: true, progress: 1, sourceProgress: 1, bookAge: 80, ambient: 80 }).hash,
+      'reduced motion must show one stable, complete celestial arrangement');
+  }
+  const settled = renderSky(width, height, { heading, identity });
+  const crescents = settled.paintings.filter(paint => paint.op === 'fill' && paint.commands.filter(command => command.op === 'bezierCurveTo').length >= 2);
+  assert.ok(crescents.length > 0, 'the moon must be actual curved vector cutwork');
+  assert.ok(crescents.every(paint => paint.fillStyle !== skyPalette.paper), 'a crescent must not erase the architecture with a paper-coloured patch');
+  assert.ok(settled.paintings.some(paint => paint.op === 'fill' && paint.commands.filter(command => command.op === 'lineTo').length >= 7), 'the sky must contain drawn star silhouettes, not a font symbol');
+  assert.ok(settled.paintings.some(paint => paint.op === 'stroke' && paint.commands.some(command => command.op === 'arc')), 'the solar geometry must contain actual ring paths');
+  assert.ok(!settled.paintings.some(paint => paint.op === 'fillText'), 'celestial emblems must remain original vectors');
+  assert.notEqual(renderSky(width, height, { progress: .14 }).hash, renderSky(width, height, { progress: .63 }).hash,
+    'the celestial elements must construct across multiple moments');
+  const skyInk = sample => sample.paintings.map(({ clips, ...paint }) => paint);
+  for (const progress of [.4, .63, 1]) assert.deepEqual(
+    skyInk(renderSky(width, height, { phase: 3, bookAge: 0, sourceProgress: progress, heading, inventory: inventoryBox })),
+    skyInk(renderSky(width, height, { phase: 2, progress, heading, identity })),
+    'the book must inherit the actual partially assembled sky rather than replace it at the identity boundary');
+  assert.deepEqual(skyInk(renderSky(width, height, { phase: 3, bookAge: .8, sourceProgress: .63 })),
+    skyInk(renderSky(width, height, { phase: 4, bookAge: .8, sourceProgress: .63 })),
+    'discovery and registration must carry one uninterrupted celestial assembly clock');
+}
+// An unusually wide identity heading can move the entire sun/moon into the
+// margins. A differently placed book title must not reset them at the boundary.
+const broadIdentityHeading = { x: 180, y: 70, width: 920, height: 200 };
+const celestialInk = sample => sample.paintings.map(({ clips, ...paint }) => paint);
+for (const progress of [.4, .63, 1]) {
+  const sourceSky = renderSky(1280, 720, { phase: 2, progress, heading: broadIdentityHeading });
+  assert.notDeepEqual(celestialInk(sourceSky), celestialInk(renderSky(1280, 720, { phase: 2, progress })),
+    'the wide-heading fixture must actually displace celestial medallions before the handoff');
+  for (const bookHeading of [broadIdentityHeading, { x: 265, y: 176, width: 752, height: 128 }]) {
+    const incomingSky = renderSky(1280, 720, { phase: 3, bookAge: 0, sourceProgress: progress,
+      heading: bookHeading, sourceHeading: broadIdentityHeading });
+    assert.deepEqual(celestialInk(incomingSky), celestialInk(sourceSky),
+      'title-avoiding medallions must inherit the displaced source pose before moving around the new book heading');
+  }
+}
 let samples = 0, maxCommands = 0;
 for (const [width, height] of [[1920, 1080], [1280, 720], [390, 844]]) {
   for (const light of [true, false]) {
@@ -263,17 +344,28 @@ for (const [width, height] of [[240, 320], [320, 240], [2560, 360], [360, 1600]]
   }
 }
 
-// The two arch segments must physically meet at the apex, not approximate a
-// pointed-arch shape with unrelated curves. Test the real recorded circle paths.
+// The identity portal reads as a church: sustained vertical columns support a
+// short pointed crown. Inspect the painted silhouette, not its curve formula.
 const portal = render(1280, 720, { ...base, phase: 2, reducedMotion: true, impulse: 0 });
-const arch = portal.records.filter(record => record.op === 'arc' && record.lineWidth === 2.3 && record.globalAlpha === .88);
-assert.equal(arch.length, 2);
-const circlePoint = (record, angle) => screenPoint(record, record.args[0] + Math.cos(angle) * record.args[2], record.args[1] + Math.sin(angle) * record.args[2]);
-const apexLeft = circlePoint(arch[0], arch[0].args[4]), apexRight = circlePoint(arch[1], arch[1].args[3]);
-assert.ok(Math.hypot(apexLeft[0] - apexRight[0], apexLeft[1] - apexRight[1]) < 1e-7, 'pointed-arch arcs must intersect exactly');
-const leftSpring = circlePoint(arch[0], arch[0].args[3]), rightSpring = circlePoint(arch[1], arch[1].args[4]);
-assert.ok(Math.abs((leftSpring[1] - apexLeft[1]) / (rightSpring[0] - leftSpring[0]) - Math.sqrt(3) / 2) < 1e-7,
-  'portal proportions must follow the equal-circle construction');
+const churchInk = paintedPaths(portal.records).filter(paint => paint.op === 'stroke' && paint.lineWidth === 2.3 && paint.globalAlpha === .88);
+const churchSegments = churchInk.flatMap(pathSegments), churchPoints = churchSegments.flat();
+const churchAxis = (Math.min(...churchPoints.map(point => point[0])) + Math.max(...churchPoints.map(point => point[0]))) / 2;
+const apex = churchPoints.reduce((top, point) => point[1] < top[1] ? point : top);
+const verticals = churchSegments.filter(([a, b]) => Math.abs(a[0] - b[0]) < 1e-7 && Math.abs(a[1] - b[1]) > 5);
+const column = side => verticals.filter(([a]) => side * (a[0] - churchAxis) > 0)
+  .sort(([a, b], [c, d]) => Math.abs(d[1] - c[1]) - Math.abs(b[1] - a[1]))[0];
+for (const side of [-1, 1]) {
+  const leg = column(side);
+  assert.ok(leg, 'each side of the portal must have a real vertical column');
+  const spring = Math.min(leg[0][1], leg[1][1]), columnHeight = Math.abs(leg[0][1] - leg[1][1]);
+  assert.ok(spring > apex[1] && columnHeight > (spring - apex[1]) * 1.15,
+    'long straight columns must dominate the short crown instead of forming a tall rounded tunnel');
+}
+assert.ok(Math.abs(apex[0] - churchAxis) < 1e-7, 'both church halves must join at the same centered apex');
+const crownSides = churchSegments.filter(segment => segment.some(point => Math.hypot(point[0] - apex[0], point[1] - apex[1]) < 1e-7))
+  .map(segment => segment.find(point => Math.hypot(point[0] - apex[0], point[1] - apex[1]) > 1e-7)).filter(Boolean);
+assert.ok(crownSides.some(point => point[0] < apex[0]) && crownSides.some(point => point[0] > apex[0]), 'both crown halves must reach the actual apex without a seam');
+assert.ok(crownSides.every(point => point[1] - apex[1] > Math.abs(point[0] - apex[0]) * .18), 'the crown needs a pointed join rather than a flat circular summit');
 
 // Stage titles use glyph-local contrast, not a large rectangular hole in the
 // architecture. Their measured bounds still anchor capitals and the handoff.
@@ -282,7 +374,8 @@ const identityPlate = { x: 408, y: 333, width: 464, height: 200 };
 for (const phase of [1, 2, 3, 4]) {
   const sample = render(1280, 720, { ...base, phase, progress: 1, impulse: 0, reducedMotion: true,
     layout: { heading, identity: identityPlate } });
-  assert.ok(sample.paintings.every(paint => ![0, 8 * .72, 14 * .72].some(padding => clipHole(paint, heading, padding))),
+  const structuralInk = sample.paintings.filter(paint => paint.op === 'stroke' && paint.lineWidth === 2.3 && paint.globalAlpha === .88 || paint.op === 'fillText' && parseFloat(paint.font.split(' ')[1]) > 500);
+  assert.ok(structuralInk.every(paint => ![0, 8 * .72, 14 * .72].some(padding => clipHole(paint, heading, padding))),
     `phase ${phase} must keep the architecture continuous through the stage title bounds`);
   if (phase === 2) {
     const arches = sample.paintings.filter(paint => paint.op === 'stroke' && paint.lineWidth === 2.3 && paint.globalAlpha === .88);
@@ -415,6 +508,7 @@ for (const [width, height, page] of [
 // poses. Compare the actual outgoing arcs with the transformed paths at age 0;
 // this fails if a new approximate portal is simply faded in at the next chapter.
 const mainArches = records => paintedPaths(records).filter(path => path.op === 'stroke' && path.lineWidth === 2.3 && path.globalAlpha === .88);
+const windowTracery = sample => sample.paintings.filter(paint => paint.op === 'stroke' && paint.lineWidth === 1.05 && paint.globalAlpha === .58);
 const folioPaper = records => paintedPaths(records).filter(path => path.op === 'fill' &&
   ['#183459', '#294974', '#dce6ed', '#1c3047', '#f6f7f6', '#0c1424', '#ffffff', '#101c2d'].includes(path.fillStyle) &&
   path.commands.filter(command => command.op === 'bezierCurveTo').length >= 3);
@@ -470,6 +564,11 @@ for (const [width, height, book] of [
       assert.ok(distance < .8,
         `source arch must be geometrically continuous at ${width}px, source progress ${progress}; discontinuity ${distance.toFixed(3)}px`);
     }
+    const oldWindow = windowTracery(old).flatMap(pathSegments).flat(), nextWindow = windowTracery(next).flatMap(pathSegments).flat();
+    assert.ok(oldWindow.length > 0, 'the source portal must really paint its shoulder and window tracery');
+    assert.equal(nextWindow.length, oldWindow.length, 'the book must inherit the full window construction, including partial strokes');
+    assert.ok(oldWindow.every((point, index) => Math.hypot(point[0] - nextWindow[index][0], point[1] - nextWindow[index][1]) < 1e-6),
+      'church window ink must remain continuous at the identity-to-book handoff');
   }
   for (const progress of [.55, .63, 1]) {
     const old = render(width, height, { ...base, phase: 2, visualProgress: progress, impulse: 0, layout: sourceLayout });
@@ -556,6 +655,11 @@ for (const [width, height, book] of [
     assert.equal(actualSeals.length, expectedSeals.length, 'aspect-ratio reflow must retain both source imprints');
     assert.ok(expectedSeals.every((point, index) => Math.hypot(point[0] - actualSeals[index][0], point[1] - actualSeals[index][1]) < 1e-6),
       'the seals must use the same similarity transform as the source arches during viewport reflow');
+    const expectedWindow = windowTracery(original).flatMap(pathSegments).flat().map(fitPoint);
+    const actualWindow = windowTracery(resized).flatMap(pathSegments).flat();
+    assert.equal(actualWindow.length, expectedWindow.length, 'responsive handoff must retain all source window tracery');
+    assert.ok(expectedWindow.every((point, index) => Math.hypot(point[0] - actualWindow[index][0], point[1] - actualWindow[index][1]) < 1e-6),
+      'window tracery must resize together with the portal, without recomposing a different source');
   }
   const fallback = frame(0, { bookSource: null });
   assert.ok(mainArches(fallback.records).length, 'direct chapter entry must still construct a portal without a captured source');
