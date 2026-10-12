@@ -15,7 +15,7 @@
 |---|---|---|
 | 仓库内容 | Rust 应用（12 个 crate：CLI / TUI / 网页 / 桌面端 / 电脑操作 / 桌宠）+ 本 addon | **只有本 addon**：动画本体 + addon 包 + 安装与维护脚本 |
 | git 跟踪文件 | 255 个 / 10.4 MB | **56 个 / 1.85 MB** |
-| 能装什么 | `install_dsh.py` 装 Rust 应用；`install_native_startup.py` 装本 addon | 只能装本 addon（**Rust 应用已移除**，需要请用上游） |
+| 安装方式 | `install_dsh.py` 装 Rust 应用；`install_native_startup.py` 装 addon（**网页/CLI** 路径，需 npm） | `install_startup_animation.py` **默认装进 DSH 桌面端**（不需要 npm）；同时保留上游的网页/CLI 安装器 |
 | 卡在"展开能力档案" | 有：进入第 3 阶段后无人发起读取，必须手动点一下才继续 | **已修**：进入第 3 阶段即自动读取，并加 30 秒兜底 |
 | 演出收尾 | 同一 tick 内抽掉 iframe，官方界面瞬间出现 | **已修**：交叉淡出（影片 520 ms 淡出 + 底层由 0.55 亮度 480 ms 落定） |
 | 与上游同步 | — | 历史已大幅分叉，**无法 `merge` 上游**；上游更新需手工挑选 |
@@ -48,45 +48,59 @@
 
 ## 运行要求
 
-| 项 | 要求 |
+| 场景 | 要求 |
 |---|---|
-| Node.js | `^22.19.0 \|\| >=24.0.0`（官方 DSH 的下限） |
-| 官方 DSH | `@deepseek-ai/dsh@0.2.0-rc.2`（`package.json` 里固定版本） |
-| 安装工具 | Python 3 + `npm`（走官方安装器时）；打包分发只需 `npm pack` |
+| **桌面端（推荐路径）** | 官方 DSH 桌面版 + **Python 3**；**不需要** npm、Node 工具链或全局安装 |
+| 官方 DSH 版本 | 在 `@deepseek-ai/dsh@0.2.0-rc.2` 上验证；大版本升级若接口变动需重新适配 |
+| 网页 / CLI 路径（可选） | Node.js `^22.19.0 \|\| >=24.0.0` + `npm`（走上游安装器） |
 | Rust / Cargo | **不需要** —— 本 addon 与上游的 Rust 部分完全解耦 |
 
 ## 安装
 
-### 方式一：官方安装器（推荐）
+### 方式一：装进 DSH 桌面端（推荐，默认路径）
 
 ```bash
 git clone https://github.com/A-common-Chinese/deepseek-harness-rust-optimize.git
 cd deepseek-harness-rust-optimize
-python scripts/install_native_startup.py
+python scripts/install_startup_animation.py
 ```
 
-安装器会把 `integrations/native-startup` 与 `docs/` 下的动画资源组装成一个 npm 包，`npm pack` 后**全局安装**（同时装入它依赖的固定版官方 DSH CLI）。完成后：
+它只做两件事，都不碰全局环境：
+
+1. 把 addon 暂存到 `$DSH_HOME/startup-animation/plugin/`（默认 `~/.dsh/…`）
+2. 在该 profile 的 `cordis.patch.yml` 里写入一段**带标记的挂载块**：按文件 URL 挂载 `plugin.mjs`，`override: true` 表示每次启动都播
+
+| 参数 | 作用 |
+|---|---|
+| `--profile web` | 装进别的 profile（默认 `desktop`） |
+| `--home /custom/.dsh` | 非默认的 DSH 根目录（默认读 `$DSH_HOME`，再退回 `~/.dsh`） |
+| `--dry-run` | 只打印将要写入的内容，不改任何文件 |
+| `--uninstall` | 整块移除挂载并删除暂存目录 |
+| `--no-backup` | 不写 `cordis.patch.yml.bak-<时间戳>` 备份 |
+
+重复执行是**幂等**的（更新同一个标记块，不会挂两次）；若 profile 里已有一行**手工挂载**的同 id 条目，它会拒绝执行并提示先清掉，避免同 id 挂两次。
+
+完成后**完整重启 DSH**——客户端插件在启动时扫描，刷新页面不够。
+
+### 方式二：官方 DSH 的网页 / CLI 路径（上游原生流程，可选）
 
 ```bash
+python scripts/install_native_startup.py      # 需要 npm
 dsh-native web --startup
 ```
 
-### 方式二：只打包，不安装
+安装器会把 addon 组装成 npm 包并**全局安装**（同时装入它依赖的固定版官方 DSH CLI）。这条路上游已说明**不覆盖 Electron 桌面端**，只作用于 CLI 起的网页会话。
+
+### 方式三：只打包 / 装到独立前缀
 
 ```bash
-python scripts/install_native_startup.py --pack-only
-# 产物：target/native-startup-package/dsh-rust-native-startup-0.1.0.tgz
+python scripts/install_native_startup.py --pack-only            # 产出 tgz
+python scripts/install_native_startup.py --prefix /path/prefix  # 不污染全局
 ```
 
-可把该 tgz 拷到别的机器 `npm install --global <tgz>`。
+## 使用（仅方式二）
 
-### 方式三：装到独立前缀（不污染全局）
-
-```bash
-python scripts/install_native_startup.py --prefix /path/to/prefix
-```
-
-## 使用
+方式一装进桌面端后**无需任何命令**：每次启动 DSH 就会播（`override: true`）。要关掉就把挂载块里的 `override` 改成 `false`，或用 `--uninstall` 整块移除。
 
 | 命令 | 作用 |
 |---|---|
@@ -221,7 +235,8 @@ git checkout main && git merge upstream/main
 | `integrations/native-startup/test.mjs` | 集成自测（`node --test test.mjs`） |
 | `docs/startup-*.js` `*.html` `*.css` | 动画本体与预览页（打包时复制进 `assets/`） |
 | `docs/assets/{voice,fonts,licenses}` | 旁白 WAV、字体子集、素材许可 |
-| `scripts/install_native_startup.py` | 组装 npm 包并安装 |
+| `scripts/install_startup_animation.py` | **桌面端安装器（默认路径）**：暂存 addon 并把挂载块写进 profile |
+| `scripts/install_native_startup.py` | 上游安装器：组装 npm 包并全局安装（网页/CLI 路径） |
 
 ## 许可与素材来源
 
