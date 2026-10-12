@@ -26,7 +26,7 @@ beforeEach(() => {
   vi.mocked(api.bootstrap).mockResolvedValue(boot);
   vi.mocked(consumeInitialPlayback).mockReturnValue(false);
 });
-afterEach(() => { cleanup(); vi.resetAllMocks(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.resetAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe("Access-gated Harness", () => {
   it("rechecks an embedded profile change and updates the workbench without bootstrapping or restarting the film", async () => {
@@ -195,5 +195,45 @@ describe("Access-gated Harness", () => {
     expect(await screen.findByRole("alert")).toHaveProperty("textContent", expect.stringContaining("offline"));
     expect(api.bootstrap).not.toHaveBeenCalled();
     expect(screen.queryByText("Private workbench")).toBeNull();
+  });
+
+  it.each([true, false])("retries a stalled post-film bootstrap without replaying or bypassing access (unlocked=%s)", async unlockedAfterRetry => {
+    vi.useFakeTimers();
+    const realApi = await vi.importActual<typeof import("./api")>("./api");
+    const signals: AbortSignal[] = [];
+    vi.stubGlobal("fetch", vi.fn((_path: string, options: RequestInit) => {
+      const signal = options.signal as AbortSignal;
+      signals.push(signal);
+      return new Promise<never>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(new DOMException("Cancelled", "AbortError")), { once: true });
+      });
+    }));
+    vi.mocked(api.accessStatus).mockResolvedValue({ ...status, unlocked: true });
+    vi.mocked(api.bootstrap).mockImplementation(realApi.bootstrap);
+    vi.mocked(consumeInitialPlayback).mockReturnValue(true);
+    await act(async () => { render(<HarnessRoot />); });
+    const frame = screen.getByTitle("DSH 沉浸式启动动画") as HTMLIFrameElement;
+    expect(signals).toHaveLength(1);
+
+    await act(async () => send(frame, "complete"));
+    expect(signals[0].aborted).toBe(true);
+    expect(signals).toHaveLength(2);
+    expect(screen.queryByTitle("DSH 沉浸式启动动画")).toBeNull();
+    expect(screen.queryByText("Private workbench")).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    expect(screen.getByRole("alert").textContent).toContain("连接本机 Harness 超时，请重试。");
+    expect(signals[1].aborted).toBe(true);
+
+    vi.mocked(api.accessStatus).mockResolvedValue({ ...status, unlocked: unlockedAfterRetry });
+    vi.mocked(api.bootstrap).mockResolvedValue(boot);
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "重新连接" })); });
+    expect(screen.queryByTitle("DSH 沉浸式启动动画")).toBeNull();
+    expect(consumeInitialPlayback).toHaveBeenCalledOnce();
+    expect(api.bootstrap).toHaveBeenCalledTimes(unlockedAfterRetry ? 3 : 2);
+    if (unlockedAfterRetry) expect(screen.getByText("Private workbench")).toBeTruthy();
+    else {
+      expect(screen.getByRole("heading", { name: "访问身份确认" })).toBeTruthy();
+      expect(screen.queryByText("Private workbench")).toBeNull();
+    }
   });
 });

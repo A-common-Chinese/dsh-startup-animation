@@ -5,6 +5,113 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { chooseNext, consumeNext, dataDirectory, profileInput, saveSettings, settings } from './state.mjs';
+async function overlayHarness({ storage = new Map(), denied = '', instance = 'run-a', failAppend = false } = {}) {
+  const { runInNewContext } = await import('node:vm');
+  const listeners = new Map(), observers = new Set(), timers = new Map(), frames = [], buttons = [];
+  const background = { nodeType: 1, inert: false }, alreadyInert = { nodeType: 1, inert: true };
+  let requests = 0, restores = 0, timerId = 0;
+  const body = { children: [background, alreadyInert], append(...nodes) {
+    if (failAppend) throw new Error('mount failed');
+    this.children.push(...nodes);
+    for (const observer of observers) observer.callback([{ addedNodes: nodes }]);
+  } };
+  const make = tag => {
+    const events = new Map();
+    const node = { tag, nodeType: 1, style: {}, inert: false, contentWindow: {}, setAttribute() {},
+      addEventListener(kind, callback) { events.set(kind, callback); }, removeEventListener(kind) { events.delete(kind); },
+      focus() {}, remove() { body.children = body.children.filter(child => child !== node); node.removed = true; },
+      fire(kind, event = {}) { events.get(kind)?.(event); } };
+    (tag === 'iframe' ? frames : buttons).push(node);
+    return node;
+  };
+  const window = {
+    addEventListener(kind, callback) { if (!listeners.has(kind)) listeners.set(kind, new Set()); listeners.get(kind).add(callback); },
+    removeEventListener(kind, callback) { listeners.get(kind)?.delete(callback); },
+  };
+  const context = {
+    fetch: async () => { requests++; return { ok: true, json: async () => ({ enabled: true, instance }) }; },
+    crypto: { randomUUID: () => '01234567-89ab-cdef-0123-456789abcdef' }, URLSearchParams,
+    location: { origin: 'http://127.0.0.1:3080' },
+    sessionStorage: {
+      getItem(key) { if (denied === 'read') throw new Error('storage disabled'); return storage.get(key) ?? null; },
+      setItem(key, value) { if (denied === 'write') throw new Error('quota denied'); storage.set(key, value); },
+    },
+    document: { readyState: 'complete', documentElement: { dataset: {} }, createElement: make, body,
+      activeElement: { isConnected: true, inert: false, focus() { restores++; } } },
+    MutationObserver: class {
+      constructor(callback) { this.callback = callback; }
+      observe() { observers.add(this); } disconnect() { observers.delete(this); }
+    }, window, console: { warn() {} },
+    setTimeout(callback) { const id = ++timerId; timers.set(id, callback); return id; },
+    clearTimeout(id) { timers.delete(id); },
+  };
+  const source = readFileSync(new URL('./overlay.mjs', import.meta.url), 'utf8');
+  const run = async () => { runInNewContext(source, context); await new Promise(resolve => setImmediate(resolve)); };
+  const send = type => {
+    const frame = frames[0], channel = new URL(frame.src, context.location.origin).searchParams.get('channel');
+    for (const handler of [...listeners.get('message') ?? []]) handler({ origin: context.location.origin, source: frame.contentWindow, data: { source: 'dsh-startup', channel, type } });
+  };
+  return { run, send, frames, buttons, background, alreadyInert, observers, timers, listeners, storage,
+    requests: () => requests, restores: () => restores };
+}
+
+test('duplicate native overlay injection creates only one interactive frame', async () => {
+  const h = await overlayHarness();
+  await Promise.all([h.run(), h.run()]);
+  assert.equal(h.requests(), 1);
+  assert.equal(h.frames.length, 1);
+  assert.equal(h.frames[0].inert, false);
+  assert.equal(h.buttons[0].inert, false);
+  h.send('skip');
+});
+
+test('an interrupted opening is not replayed by a host-page reload', async () => {
+  const first = await overlayHarness();
+  await first.run(); first.send('ready');
+  const reloaded = await overlayHarness({ storage: first.storage });
+  await reloaded.run();
+  assert.equal(reloaded.frames.length, 0);
+  first.send('complete');
+  const completed = await overlayHarness({ storage: first.storage });
+  await completed.run(); assert.equal(completed.frames.length, 0);
+  const newServer = await overlayHarness({ storage: first.storage, instance: 'run-b' });
+  await newServer.run(); assert.equal(newServer.frames.length, 1); newServer.send('skip');
+});
+
+test('unavailable tab storage bypasses the optional film instead of reopening it on every reload', async () => {
+  for (const denied of ['read', 'write']) {
+    const h = await overlayHarness({ denied });
+    await h.run();
+    assert.equal(h.frames.length, 0);
+    assert.equal(h.background.inert, false);
+    assert.equal(h.observers.size, 0);
+  }
+});
+
+test('native return control survives iframe failure after ready and restores the host exactly once', async () => {
+  const h = await overlayHarness();
+  await h.run(); h.send('ready');
+  assert.equal(h.timers.size, 0);
+  assert.equal(h.buttons.length, 1);
+  assert.equal(h.buttons[0].inert, false);
+  h.buttons[0].fire('click');
+  h.frames[0].fire('error'); // A late load error must not run cleanup twice.
+  assert.equal(h.background.inert, false);
+  assert.equal(h.alreadyInert.inert, true);
+  assert.equal(h.frames[0].removed, true);
+  assert.equal(h.buttons[0].removed, true);
+  assert.equal(h.restores(), 1);
+  assert.equal(h.observers.size, 0);
+});
+
+test('a partially mounted native overlay cannot leave the official page inert', async () => {
+  const h = await overlayHarness({ failAppend: true });
+  await h.run();
+  assert.equal(h.background.inert, false);
+  assert.equal(h.alreadyInert.inert, true);
+  assert.equal(h.observers.size, 0);
+  assert.equal(h.timers.size, 0);
+});
 
 test('visual style patch validates exact values without overwriting identity', () => {
   assert.deepEqual(profileInput({ visual_style: 'laterano' }), { visual_style: 'laterano' });
@@ -43,9 +150,9 @@ test('profile and one-shot data are isolated under the native DSH home', () => {
   } finally { if (previous === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = previous; rmSync(home, { recursive: true, force: true }); }
 });
 
-test('installed native registry adapter reports only live fibers and true skill observations', { skip: !process.env.NATIVE_STARTUP_PACKAGE }, async () => {
+test('native registry adapter reports only live fibers and true skill observations', async () => {
   const root = process.env.NATIVE_STARTUP_PACKAGE;
-  const { inventory, localRequest } = await import(pathToFileURL(join(root, 'plugin.mjs')));
+  const { inventory, localRequest } = await import(root ? pathToFileURL(join(root, 'plugin.mjs')) : './plugin.mjs');
   const events = [];
   const ctx = {
     skills: { snapshot: async options => { assert.equal(options.cwd, process.cwd()); return { complete: false, skills: [{ name: 'real-file', path: '/work/.dsh/skills/real-file/SKILL.md' }] }; } },
@@ -73,13 +180,14 @@ test('only matching iframe completion closes the native overlay', async () => {
   const { runInNewContext } = await import('node:vm');
   const listeners = new Map(); let appended = false, removed = false, remembered = false;
   const frame = { style: {}, nodeType: 1, contentWindow: {}, setAttribute() {}, addEventListener() {}, focus() {}, remove() { removed = true; } };
+  const exit = { style: {}, nodeType: 1, setAttribute() {}, addEventListener() {}, removeEventListener() {}, remove() {} };
   const background = { nodeType: 1, inert: false }, alreadyInert = { nodeType: 1, inert: true };
   runInNewContext(readFileSync(new URL('./overlay.mjs', import.meta.url), 'utf8'), {
     fetch: async () => ({ ok: true, json: async () => ({ enabled: true, instance: 'a' }) }),
     crypto: { randomUUID: () => 'channel-123' }, URLSearchParams,
     location: { origin: 'http://127.0.0.1:3080' },
     sessionStorage: { getItem: () => null, setItem: () => { remembered = true; } },
-    document: { readyState: 'complete', createElement: () => frame, body: { children: [background, alreadyInert], append() { appended = true; } } },
+    document: { readyState: 'complete', documentElement: { dataset: { theme: 'dark' } }, createElement: tag => tag === 'iframe' ? frame : exit, body: { children: [background, alreadyInert], append() { appended = true; } } },
     MutationObserver: class { observe() {} disconnect() {} },
     window: { addEventListener: (kind, fn) => listeners.set(kind, fn), removeEventListener: kind => listeners.delete(kind) },
     console, setTimeout, clearTimeout,

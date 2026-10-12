@@ -32,11 +32,19 @@ dsh-native web
 
 Animation is off by default. `--startup` and `--no-startup` override this
 launch; `startup next on|off` is claimed once when the first local official
-web page opens after successful boot. Subsequent page refreshes in the same
-tab/session do not replay a completed/skipped sequence. `--no-open` means
+web page opens after successful boot. The tab records the opening before
+mounting it, so refreshing during playback, completion, or skipping does
+not replay it within the same tab and server session. Repeated script
+injections share one overlay. If tab session storage is unavailable, the
+optional animation is skipped and the official UI remains available. `--no-open` means
 the choice remains pending until the page is opened. `--help`, config dumps,
 and non-web profiles do not consume it. Preferences are isolated under
 `$DSH_HOME/startup-animation` (default `~/.dsh/startup-animation`).
+
+The parent page's **返回 Harness** button remains clickable and keyboard
+reachable even if the animation fails after loading. It returns to the
+official UI and restores the page's focus and interaction state. This does
+not change or bypass official DSH authentication.
 
 All other native arguments are forwarded, for example `dsh-native web --port
 3081`. Native `web` and `--profile web` are supported. This adapter does not

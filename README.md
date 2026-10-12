@@ -250,6 +250,16 @@ dsh --silent                             # 保留动画，关闭启动音
 
 `startup next on|off` 保存一次性选择；只有下一次成功进入受支持终端的交互启动才会消费它。预览、网页、非交互命令、重定向输出或启动失败都不会消费。消费后恢复配置文件的长期设置；显式 `--startup` / `--no-startup` 优先于该选择，但本次合格的终端启动仍会消费它。两个旗标不能同时使用。多个 CLI 同时启动时，同一选择只会由一个进程取得。
 
+### 开屏等待、重播与故障恢复
+
+默认序章、身份和能力确认三个节点需要点按或 `Enter`；背景装饰持续运动表示交互待命，不代表动画又从头播放。终端可用 `--auto`，网页可按 `C` 切换连续播放；访问密码仍需验证。独立 `startup web` 预览完成后停在终幕，再次点按才重播；`web` / `app` 中的开屏完成后进入工作台。
+
+网页音频初始化最多等待 2 秒，单段旁白下载与解码最多等待 10 秒；音频设备中断、结束事件丢失时，旁白在音频时长加 2 秒后停止（上限 30 秒），视觉流程继续。本地能力读取最多等待 120 秒，超时显示失败，不伪造成功。工作台启动时的身份状态与初始化请求最多等待 10 秒，超时提供重试，不以超时替代密码验证。
+
+官方动画插件在挂载前记录本次播放，同一服务、同一标签页播放中刷新也不会重播；重复注入不会再叠加动画层。会话存储不可用时跳过可选开场，独立的「返回 Harness」按钮可在子页无响应时退出，官方登录照常生效。
+
+遇到旧版卡住或反复开场，更新源码后重新运行 `python scripts/install_dsh.py`；仅使用官方插件则重新运行 `python scripts/install_native_startup.py`，然后重启对应服务。故障回归：`node --test scripts/test_startup_liveness.cjs`，宿主生命周期检查：在 `web` 目录运行 `npm test`。
+
 ### 官方原生 DSH：单独安装动画
 
 如果使用的是 [DeepSeek 官方 Harness](https://github.com/deepseek-ai/deepseek-harness)，可只安装动画扩展，**不需要编译本 Rust 项目**。需要 Python 3.9+（仅打包安装时）和 **Node.js 22.19+（22.x）或 24+**。扩展固定使用已验证的官方 `@deepseek-ai/dsh@0.2.0-rc.2`，官方程序及依赖由 npm 一并安装。新命令叫 `dsh-native`，与现有官方／Rust 的 `dsh` 并存。
@@ -276,7 +286,7 @@ dsh-native web --no-startup         # 本次强制跳过
 dsh-native web --port 3081          # 官方网页参数原样传递
 ```
 
-原生版的一次性选择在**启动成功后首次打开经过官方登录的本机网页**时消费；`--no-open` 等待手动打开，帮助、配置导出和非 Web 命令不消费。显式开关优先，但也消费该次选择。配置独立保存在 `$DSH_HOME/startup-animation`（默认 `~/.dsh/startup-animation`），不修改 Rust 用户资料。完成／跳过后，同一浏览器标签页刷新不会重复演出。
+原生版的一次性选择在**启动成功后首次打开经过官方登录的本机网页**时消费；`--no-open` 等待手动打开，帮助、配置导出和非 Web 命令不消费。显式开关优先，但也消费该次选择。配置独立保存在 `$DSH_HOME/startup-animation`（默认 `~/.dsh/startup-animation`），不修改 Rust 用户资料。同一服务、同一浏览器标签页从首次挂载起即记录播放，完成前后刷新都不会重复演出。
 
 更新：在同一分支 `git pull` 后再次运行 `python scripts/install_native_startup.py`。卸载：`npm uninstall --global @dsh-rust/native-startup`，现有 `dsh` 及用户数据保留。离线传递安装包：`python scripts/install_native_startup.py --pack-only` 会在 `target/native-startup-package` 生成含动画、英文音频、字体和许可证的 `.tgz`；其他电脑通过 `npm install --global <该文件路径>` 安装，首次仍需从 npm 获取官方依赖。`--prefix <目录>` 可指定隔离安装位置。
 

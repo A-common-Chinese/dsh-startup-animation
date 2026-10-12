@@ -1,6 +1,6 @@
 {
   "name": "@dsh-rust/native-startup",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Optional original DSH startup animation for the official DeepSeek Harness Web profile",
   "type": "module",
   "license": "MIT",

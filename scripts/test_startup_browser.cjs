@@ -182,7 +182,7 @@ function createHarness(options = {}) {
   const windowEvents = new EventTargetStub();
   const sandbox = {
     document, console, AudioContext: SilentAudioContext, fetch: request,
-    AbortController, TextDecoder, setTimeout, clearTimeout,
+    AbortController, TextDecoder, setTimeout: options.timers?.setTimeout || setTimeout, clearTimeout: options.timers?.clearTimeout || clearTimeout,
     URL, URLSearchParams, location: { search: options.search || '' },
     performance: { now: () => now }, devicePixelRatio: 1,
     matchMedia: () => ({ matches: !!options.reducedMotion, addEventListener() {} }),
@@ -1376,4 +1376,5 @@ async function main() {
   console.log('PASS: startup lifecycle, real inventory, measured page writing/scroll exclusions, voice/access barriers, persisted styles, measured portal-to-binding handoff, delayed body reveal, uninterrupted folio clocks, continuous transitions and reduced motion.');
 }
 
-main().catch(error => { console.error(error); process.exitCode = 1; });
+module.exports = { createHarness, jsonResponse, ndjsonStream, settle };
+if (require.main === module) main().catch(error => { console.error(error); process.exitCode = 1; });

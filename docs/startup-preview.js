@@ -91,7 +91,12 @@ ui.seek.max=String(total);ui.totalTime.textContent=total.toFixed(2);
         if (!Audio) throw new Error('No Web Audio');
         audio = new Audio(); master = audio.createGain(); master.gain.value = .6; master.connect(audio.destination);
       }
-      if (audio.state === 'suspended') await audio.resume();
+      if (audio.state === 'suspended') {
+        let deadline;
+        try {
+          await Promise.race([audio.resume(), new Promise(resolve => { deadline=setTimeout(resolve,2000); })]);
+        } finally { clearTimeout(deadline); }
+      }
       return audio.state === 'running';
     } catch (_) {
       audioUnavailable = true; ui.sound.textContent = '音效不可用'; ui.sound.disabled = true; ui.sound.setAttribute('aria-pressed', 'false');
