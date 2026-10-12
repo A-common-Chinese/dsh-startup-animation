@@ -2,12 +2,24 @@
 
 给**官方 DeepSeek Harness** 的 Web 界面加一段可选开屏演出：真实读取本机的 skills 与已加载 plugins，配固定英文旁白、两套可切换的视觉风格，演完自动交回官方 Harness。
 
-> **本仓库是 fork。**
+> **本仓库是一个被裁剪过的 fork，只保留这个动画。**
 > - 上游：https://github.com/Ar1haraNaN7mI/deepseek-harness-rust-optimize
 > - 本 fork：https://github.com/A-common-Chinese/deepseek-harness-rust-optimize
+> - 两处修复所在分支（相对上游的干净 diff，可直接提 PR）：`fix/startup-auto-inventory-smooth-handoff`
 >
-> 本 fork 只承载 `integrations/native-startup` 的**两处修复**（见「本 fork 改了什么」），并删去了上游那份描述整个 Rust 项目的 README。
-> 上游仓库另外包含一个用 Rust 重写的 DSH 风格助手（CLI / TUI / 网页 / Windows 桌面端），**与本 addon 无关**，本 addon 也不依赖 Rust 工具链。
+> 上游仓库同时是一个用 Rust 重写的 DSH 风格助手（CLI / TUI / 网页 / Windows 桌面端 / 电脑操作 / 桌宠）。**本 fork 已把与本 addon 无关的内容全部删除**，只留动画本体、addon 包与安装/维护脚本。
+
+## 与上游的区别
+
+| 项 | 上游 | 本 fork |
+|---|---|---|
+| 仓库内容 | Rust 应用（12 个 crate：CLI / TUI / 网页 / 桌面端 / 电脑操作 / 桌宠）+ 本 addon | **只有本 addon**：动画本体 + addon 包 + 安装与维护脚本 |
+| git 跟踪文件 | 255 个 / 10.4 MB | **56 个 / 1.85 MB** |
+| 能装什么 | `install_dsh.py` 装 Rust 应用；`install_native_startup.py` 装本 addon | 只能装本 addon（**Rust 应用已移除**，需要请用上游） |
+| 卡在"展开能力档案" | 有：进入第 3 阶段后无人发起读取，必须手动点一下才继续 | **已修**：进入第 3 阶段即自动读取，并加 30 秒兜底 |
+| 演出收尾 | 同一 tick 内抽掉 iframe，官方界面瞬间出现 | **已修**：交叉淡出（影片 520 ms 淡出 + 底层由 0.55 亮度 480 ms 落定） |
+| 与上游同步 | — | 历史已大幅分叉，**无法 `merge` 上游**；上游更新需手工挑选 |
+| README | 563 行，讲整个 Rust 项目 | 本文件，只讲这个 addon |
 
 ---
 
@@ -173,7 +185,7 @@ allowBuilds:
   protobufjs: true
 ```
 
-## 本 fork 改了什么
+## 本 fork 的两处修复
 
 只改了 `native-startup` 的两处，分支 [`fix/startup-auto-inventory-smooth-handoff`](https://github.com/A-common-Chinese/deepseek-harness-rust-optimize/tree/fix/startup-auto-inventory-smooth-handoff)，可直接向上游提 PR。
 
