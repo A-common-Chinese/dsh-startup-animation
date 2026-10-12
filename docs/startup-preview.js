@@ -54,8 +54,18 @@ let narratedPhase=-1;
 const cancelVoice=()=>{narratedPhase=-1;voice()?.cancel?.();};
 const narrate=()=>{if(narratedPhase===sequence.phase)return;narratedPhase=sequence.phase;voice()?.phase?.(sequence.phase,{username:ui.identityName.value.trim()||local.profile.username,inventory:local.inventory,connection:local.connection,inventoryMode:local.profile.inventory_mode});};
 const loadFinished=()=>['complete','error','unavailable'].includes(local.inventory.status);
-function barriers(){for(let i=0;i<6;i++){if((i===2&&accessBlocked())||(i===3&&!loadFinished())||(i===sequence.phase&&voice()?.busy))sequence.hold(i);else sequence.release(i);}}
 function beginLocalLoad(){if(!accessBlocked()&&sequence.phase===3&&sequence.playing&&['idle','cancelled'].includes(local.inventory.status))void local.load();}
+/* LOCAL PATCH: beginLocalLoad() was only called from start() (still phase 0, so its
+   phase===3 guard never passed) and from the manual reconnect button. Entering phase 3
+   therefore never started the inventory, loadFinished() stayed false, and barriers()
+   held the stage until the user clicked. Start the load as soon as phase 3 opens, and
+   stop holding after 30 s so a stalled stream can never require a click. */
+let localLoadWaiting=0;
+function barriers(){
+  if(sequence.phase===3){beginLocalLoad();if(!localLoadWaiting&&!loadFinished())localLoadWaiting=performance.now();}else localLoadWaiting=0;
+  const localLoadStalled=Boolean(localLoadWaiting)&&performance.now()-localLoadWaiting>30000;
+  for(let i=0;i<6;i++){if((i===2&&accessBlocked())||(i===3&&!loadFinished()&&!localLoadStalled)||(i===sequence.phase&&voice()?.busy))sequence.hold(i);else sequence.release(i);}
+}
 ui.seek.max=String(total);ui.totalTime.textContent=total.toFixed(2);
   function stopAudio() {
     for (const source of audioSources) { try { source.stop(); } catch (_) { /* Already ended. */ } }

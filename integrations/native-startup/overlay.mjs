@@ -1,5 +1,16 @@
-/* Uses the shared animation's authenticated parent completion protocol. */
+/* Uses the shared animation's authenticated parent completion protocol.
+ *
+ * LOCAL PATCH (this machine): the ending used to remove the film instantly, so
+ * the official Harness appeared in one frame. It now cross-fades:
+ *   0 ms    film fades out (520 ms) while the Harness sits behind it, dimmed
+ *   540 ms  film removed, underlying nodes released, Harness settles to full
+ *   1020 ms inline styles cleared
+ * Reapply after reinstalling the package:
+ *   copy this file over node_modules/@dsh-rust/native-startup/overlay.mjs
+ */
 (() => {
+  const REVEAL_MS = 520;
+  const SETTLE_MS = 480;
   const start = async () => {
     try {
       const response = await fetch('/__dsh_startup/launch', { cache: 'no-store', headers: { 'X-DSH-Startup': 'launch' } });
@@ -27,16 +38,38 @@
       observer.observe(document.body, { childList: true });
       const containFocus = event => { if (event.target !== frame) frame.focus(); };
       window.addEventListener('focusin', containFocus, true);
-      let deadline;
+      // The element the official Harness renders into; it settles from dim to full
+      // as the film dissolves, instead of appearing at full brightness in one tick.
+      const surface = document.getElementById('root') ||
+        [...document.body.children].find(node => node !== frame && node.nodeType === 1) || null;
+      let deadline, closing = false;
       const dismiss = () => {
+        if (closing) return; // 'complete' and Escape can race
+        closing = true;
         clearTimeout(deadline);
         observer.disconnect();
         window.removeEventListener('focusin', containFocus, true);
-        for (const [node, wasInert] of inert) node.inert = wasInert;
-        frame.remove(); window.removeEventListener('message', close);
-        window.removeEventListener('keydown', escape);
-        if (previousFocus?.isConnected && !previousFocus.inert) previousFocus.focus?.();
         try { sessionStorage.setItem(key, 'done'); } catch { /* Never block returning to Harness. */ }
+        const easing = 'cubic-bezier(.4,0,.2,1)';
+        frame.style.transition = `opacity ${REVEAL_MS}ms ${easing}, transform ${REVEAL_MS + 120}ms ${easing}`;
+        frame.style.transform = 'scale(1.012)';
+        frame.style.opacity = '0';
+        if (surface) {
+          surface.style.transition = `opacity ${SETTLE_MS}ms ${easing}`;
+          surface.style.opacity = '0.55';
+        }
+        const finish = () => {
+          for (const [node, wasInert] of inert) node.inert = wasInert;
+          frame.remove();
+          window.removeEventListener('message', close);
+          window.removeEventListener('keydown', escape);
+          if (surface) surface.style.opacity = '1';
+          if (previousFocus?.isConnected && !previousFocus.inert) previousFocus.focus?.();
+          setTimeout(() => {
+            if (surface) { surface.style.transition = ''; surface.style.opacity = ''; }
+          }, SETTLE_MS + 40);
+        };
+        setTimeout(finish, REVEAL_MS + 20);
       };
       const escape = event => { if (event.key === 'Escape') dismiss(); };
       const close = event => {
