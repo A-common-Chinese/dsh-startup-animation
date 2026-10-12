@@ -121,7 +121,7 @@ python scripts/install_native_startup.py --prefix /path/prefix  # 不污染全�
 | 键 | 行为 |
 |---|---|
 | 点击画面 / `Enter` | 开始播放；播放中触发扫描波、推进当前阶段 |
-| **`Space`** | **紧急中止**：立刻冻住当前演出 → 播一段约 **1.9 秒**的**红黑紧急代码确认**（带动画背景：网格漂移 / 扫描带 / 脉冲辉光 / 雷达环，并念同款英文旁白 `Emergency confirmed.`）→ 自动进入 Harness。该面板播放中再按一次 `Space` 可立即跳过（**面板上不显示该提示**） |
+| **`Space`** | **紧急中止**：立刻冻住当前演出 → 播一段约 **2.4 秒**的**红黑紧急代码确认**（从原版白黑观感渐变，进度条到 1/3 时完全变红；带网格漂移 / 扫描带 / 脉冲辉光 / 雷达环），并**直接复用原版最后一句旁白 `phase-5.wav`（"Welcome, Operator."，逐比特原声）** → 自动进入 Harness。该面板播放中再按一次 `Space` 可立即跳过（**面板上不显示该提示**） |
 | `Esc` | 跳过演出，直接返回官方 Harness（不放紧急面板） |
 | `C` | 收起/展开设置面板 |
 | `M` | 静音 |
@@ -236,16 +236,16 @@ git checkout main && git merge upstream/main
 | `integrations/native-startup/state.mjs` | 偏好读写与 `startup next` 的一次性认领 |
 | `integrations/native-startup/test.mjs` | 集成自测（`node --test test.mjs`） |
 | `docs/startup-*.js` `*.html` `*.css` | 动画本体与预览页（打包时复制进 `assets/`） |
-| `docs/assets/{voice,fonts,licenses}` | 旁白 WAV（含 `emergency.wav` 紧急面板旁白）、字体子集、素材许可 |
+| `docs/assets/{voice,fonts,licenses}` | 旁白 WAV、字体子集、素材许可 |
 | `scripts/install_startup_animation.py` | **桌面端安装器（默认路径）**：暂存 addon 并把挂载块写进 profile |
 | `scripts/install_native_startup.py` | 上游安装器：组装 npm 包并全局安装（网页/CLI 路径） |
 | `scripts/patch_startup_*.py` | 本 fork 的补丁脚本（清单自动加载 / 收尾交叉淡出 / 面板停留 / token 自愈 / 紧急面板），全部幂等、可从历史版本重放 |
-| `scripts/make_emergency_voice.py` | 用本地 ZipVoice 生成紧急面板旁白并做后处理（24 kHz / −2.16 dBFS / 6 ms 淡化） |
+| `scripts/preview_startup_animation.py` | 网页预览服务器：把 addon 置于自带静态预览模式，回环只读，无需 DSH 即可在浏览器里看动画 |
 
 ## 许可与素材来源
 
 - **代码**（`integrations/native-startup/**`、`docs/startup-*.{js,html,css}`、`scripts/` 下的维护脚本）：**MIT**（`integrations/native-startup/LICENSE`）
 - **美术与音频**（`docs/assets/**`）：**不在 MIT 覆盖范围**，按 as-is 随插件分发，仅供运行本插件使用，不授予再许可。逐项来源记录在 `docs/assets/voice/manifest.json`（旁白生成方式、模型、参考音与 SHA-256）、`docs/assets/fonts/README.md`、`docs/assets/licenses/RhineLabUI-MIT.txt`
 - 旁白由 `Qwen/Qwen3-TTS-12Hz-1.7B-Base`（Apache-2.0）以声线克隆方式预生成，24 kHz PCM16
-- `emergency.wav`（`Space` 紧急面板那一句）**不在上面这批里**：它用 sherpa-onnx ZipVoice（distill int8，CPU，本地离线）以**同一批参考音**生成，因此音色一致；出处、参数与 SHA-256 见 `docs/assets/voice/emergency.json`
+- 紧急面板（`Space`）的旁白**直接复用上面这批里的 `phase-5.wav`**（"Welcome, Operator."），不做任何生成或处理，因此与原版逐比特一致
 - 中文字体为 Noto Sans SC 子集（`docs/assets/fonts/dsh-industrial-sc.woff2`），许可见 `docs/assets/fonts/OFL-NotoSansSC.txt`

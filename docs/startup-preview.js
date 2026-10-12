@@ -395,35 +395,43 @@ function activate(){if(sequence.phase>=2&&accessBlocked()){requireAccess();retur
 function jump(phase){if(accessBlocked()&&phase>2)phase=2;generation++;starting=false;stopAudio();cancelVoice();sequence.jump(phase);phaseAge=0;manualPause=false;impulse=.65;local.cancelLoad();refresh();announce('已切换到'+phases[phase][0]+'。点按画面播放。');}
 function skip(){if(accessBlocked()){requireAccess();return;}generation++;starting=false;stopAudio();cancelVoice();sequence.seek(total);phaseAge=0;manualPause=false;local.cancelLoad(false);refresh();announce('已跳过启动演出。');finishEmbedded('skip');}
 
-/* LOCAL PATCH: Space aborts the show (v2). Freezes the stage, plays a short red/black
-   "emergency code" panel with an animated background, then hands control straight back
+/* LOCAL PATCH: Space aborts the show (v2.6). Freezes the stage, plays a red/black
+   "emergency code" panel - starting from the show's own light look and washing over to
+   full red/black by the time the bar is a third full - then hands control straight back
    to the Harness. Self-contained: the panel carries its own inline styling. */
 let emergencyActive=false;
-const EC_PANEL_MS=1900,EC_BAR_MS=1550,EC_VOICE_DELAY_MS=140;
+const EC_PANEL_MS=2400,EC_BAR_MS=2050,EC_RED_MS=Math.round(EC_BAR_MS/3),EC_VOICE_DELAY_MS=140;
 function emergency(){
  if(embeddedEnded)return;
  if(emergencyActive){finishEmbedded('skip');return;} // second press skips the panel (not advertised on-screen)
  emergencyActive=true;generation++;starting=false;manualPause=true;
  sequence.pause();stopAudio();cancelVoice();local.cancelLoad(false);
  const code='E-'+String(Math.floor(1000+Math.random()*8999));
+ const wash=EC_RED_MS+'ms linear forwards';
  const style=document.createElement('style');
- style.textContent='#emergencyCode{position:fixed;inset:0;z-index:2147483647;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:20px;overflow:hidden;background:radial-gradient(120% 90% at 50% 0%,#2c0806 0%,#120405 55%,#080203 100%);color:#ff5a48;font-family:inherit;letter-spacing:.16em;text-align:center;animation:ecIn .22s ease-out both}'
-  +'#emergencyCode .ec-layer{position:absolute;inset:0;pointer-events:none}'
+ style.textContent='#emergencyCode{position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;overflow:hidden;background:linear-gradient(180deg,#f3f0ea 0%,#ded9d1 100%);color:#17171a;font-family:inherit;letter-spacing:.16em;text-align:center;animation:ecIn .5s ease-out both}'
+  +'#emergencyCode .ec-wash{position:absolute;inset:0;opacity:0;background:radial-gradient(120% 90% at 50% 0%,#2c0806 0%,#120405 55%,#080203 100%);animation:ecWash '+wash+'}'
+  +'#emergencyCode .ec-deco{position:absolute;inset:0;pointer-events:none;opacity:0;animation:ecWash '+wash+'}'
+  +'#emergencyCode .ec-layer{position:absolute;inset:0}'
   +'#emergencyCode .ec-grid{background-image:linear-gradient(rgba(255,70,50,.10) 1px,transparent 1px),linear-gradient(90deg,rgba(255,70,50,.10) 1px,transparent 1px);background-size:38px 38px;animation:ecDrift 2.6s linear infinite}'
-  +'#emergencyCode .ec-glow{background:radial-gradient(46% 34% at 50% 46%,rgba(255,59,40,.30) 0%,rgba(255,59,40,.07) 42%,transparent 72%);animation:ecPulse 1.15s ease-in-out infinite alternate}'
+  +'#emergencyCode .ec-glow{background:radial-gradient(46% 34% at 50% 50%,rgba(255,59,40,.30) 0%,rgba(255,59,40,.07) 42%,transparent 72%);animation:ecPulse 1.15s ease-in-out infinite alternate}'
   +'#emergencyCode .ec-scan{height:22%;top:-22%;inset:auto 0 auto 0;background:linear-gradient(180deg,transparent,rgba(255,86,64,.20) 45%,rgba(255,140,120,.30) 50%,rgba(255,86,64,.20) 55%,transparent);animation:ecSweep 1.5s linear infinite}'
-  +'#emergencyCode .ec-rings{position:absolute;left:50%;top:46%;translate:-50% -50%;width:min(58vw,620px);aspect-ratio:1;border-radius:50%;border:1px dashed rgba(255,70,50,.22);animation:ecSpin 7s linear infinite}'
+  +'#emergencyCode .ec-rings{position:absolute;left:50%;top:50%;translate:-50% -50%;width:min(58vw,620px);aspect-ratio:1;border-radius:50%;border:1px dashed rgba(255,70,50,.22);animation:ecSpin 7s linear infinite}'
   +'#emergencyCode .ec-rings:after{content:"";position:absolute;inset:16%;border-radius:50%;border:1px solid rgba(255,70,50,.30);animation:ecPing 1.5s ease-out infinite}'
   +'#emergencyCode .ec-ticks:before,#emergencyCode .ec-ticks:after{content:"";position:absolute;width:46px;height:46px;border:2px solid rgba(255,86,64,.55);animation:ecBlink 1.1s steps(2,end) infinite}'
   +'#emergencyCode .ec-ticks:before{left:68px;top:68px;border-right:0;border-bottom:0}'
   +'#emergencyCode .ec-ticks:after{right:68px;bottom:68px;border-left:0;border-top:0}'
-  +'#emergencyCode .ec-code{font-size:calc(34px + 2.4vw);font-weight:700;letter-spacing:.24em;color:#ff3b28;text-shadow:0 0 28px rgba(255,59,40,.55);animation:ecFlicker 1.3s steps(3,end) infinite}'
-  +'#emergencyCode .ec-row{position:relative;z-index:1;font-size:calc(11px + .5vw);opacity:.72}'
-  +'#emergencyCode .ec-mid{position:relative;z-index:1;font-size:calc(12px + .6vw);opacity:.9}'
-  +'#emergencyCode .ec-foot{position:relative;z-index:1;font-size:calc(10px + .4vw);opacity:.58}'
-  +'#emergencyCode .ec-track{position:relative;z-index:1;width:min(46vw,520px);height:3px;background:rgba(255,90,72,.22);overflow:hidden}'
+  +'#emergencyCode .ec-content{position:relative;z-index:2;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;animation:ecInk '+wash+'}'
+  +'#emergencyCode .ec-row{font-size:calc(11px + .5vw)}'
+  +'#emergencyCode .ec-mid{font-size:calc(12px + .6vw)}'
+  +'#emergencyCode .ec-foot{font-size:calc(10px + .4vw);line-height:1.7}'
+  +'#emergencyCode .ec-code{font-size:calc(34px + 2.4vw);font-weight:700;letter-spacing:.24em;animation:ecCodeInk '+wash+',ecFlicker 1.3s steps(3,end) '+EC_RED_MS+'ms infinite}'
+  +'#emergencyCode .ec-track{position:relative;width:min(46vw,520px);height:3px;background:rgba(23,23,26,.16)}'
   +'#emergencyCode .ec-fill{height:100%;width:0;background:#ff3b28;box-shadow:0 0 14px rgba(255,59,40,.85);transition:width '+EC_BAR_MS+'ms linear}'
   +'@keyframes ecIn{from{opacity:0}to{opacity:1}}'
+  +'@keyframes ecWash{from{opacity:0}to{opacity:1}}'
+  +'@keyframes ecInk{from{color:rgba(23,23,26,.62)}to{color:#ff5a48}}'
+  +'@keyframes ecCodeInk{from{color:#17171a}to{color:#ff3b28}}'
   +'@keyframes ecDrift{from{background-position:0 0}to{background-position:38px 38px}}'
   +'@keyframes ecPulse{from{opacity:.55}to{opacity:1}}'
   +'@keyframes ecSweep{from{top:-22%}to{top:100%}}'
@@ -435,17 +443,25 @@ function emergency(){
  host.id='emergencyCode';
  host.setAttribute('role','alertdialog');
  host.setAttribute('aria-label','紧急代码已确认，正在进入 Harness');
- host.innerHTML='<div class="ec-layer ec-grid"></div><div class="ec-layer ec-glow"></div><div class="ec-layer ec-rings"></div><div class="ec-layer ec-ticks"></div><div class="ec-layer ec-scan"></div>'
-  +'<div class="ec-row">EMERGENCY ABORT · 紧急中止</div>'
+ host.innerHTML='<div class="ec-wash"></div><div class="ec-deco"><div class="ec-layer ec-grid"></div><div class="ec-layer ec-glow"></div><div class="ec-layer ec-rings"></div><div class="ec-layer ec-ticks"></div><div class="ec-layer ec-scan"></div></div>'
+  +'<div class="ec-content"><div class="ec-row">EMERGENCY ABORT · 紧急中止</div>'
   +'<div class="ec-code">'+code+'</div>'
   +'<div class="ec-mid">紧急代码已确认 · CONFIRMED</div>'
   +'<div class="ec-track"><div class="ec-fill" id="ecBar"></div></div>'
-  +'<div class="ec-foot">正在进入 HARNESS</div>';
+  +'<div class="ec-foot">跳过验证程序，<br>正在紧急启动DeepSeek Harness</div></div>';
  document.head.append(style);document.body.append(host);
  requestAnimationFrame(()=>{const fill=document.getElementById('ecBar');if(fill)fill.style.width='100%';});
- if(!muted)ping(.02,196,.5,.035);
- setTimeout(()=>{if(!embeddedEnded)window.DSHVoice?.say?.('emergency');},EC_VOICE_DELAY_MS);
- setTimeout(()=>finishEmbedded('skip'),EC_PANEL_MS);
+ /* Space can be pressed before the show has started, and both audio paths (the score
+    and the narration module) are only initialised inside start(). Acquire them here, in
+    the key gesture, so the sting and the line are audible either way. */
+ const ecAudio=Promise.all([Promise.resolve(ensureAudio()).catch(()=>false),Promise.resolve(window.DSHVoice?.unlock?.()).catch(()=>false)]);
+ ecAudio.then(()=>{if(!muted&&!embeddedEnded)ping(.02,196,.5,.035);});
+ setTimeout(()=>{if(embeddedEnded)return;ecAudio.then(()=>{if(!muted)window.DSHVoice?.say?.('phase-5');});},EC_VOICE_DELAY_MS);
+ setTimeout(()=>{
+  if(window.DSHEmbed?.embedded){finishEmbedded('skip');return;}
+  // Static preview (no host): take the panel away so the show can be replayed.
+  host.remove();style.remove();emergencyActive=false;manualPause=false;refresh();
+ },EC_PANEL_MS);
 }
 let completionDwell=0,completionSettled=false;
 function finishEmbedded(reason){
