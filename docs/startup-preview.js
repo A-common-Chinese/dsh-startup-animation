@@ -395,7 +395,7 @@ function activate(){if(sequence.phase>=2&&accessBlocked()){requireAccess();retur
 function jump(phase){if(accessBlocked()&&phase>2)phase=2;generation++;starting=false;stopAudio();cancelVoice();sequence.jump(phase);phaseAge=0;manualPause=false;impulse=.65;local.cancelLoad();refresh();announce('已切换到'+phases[phase][0]+'。点按画面播放。');}
 function skip(){if(accessBlocked()){requireAccess();return;}generation++;starting=false;stopAudio();cancelVoice();sequence.seek(total);phaseAge=0;manualPause=false;local.cancelLoad(false);refresh();announce('已跳过启动演出。');finishEmbedded('skip');}
 
-/* LOCAL PATCH: Space aborts the show (v2.8.1). Freezes the stage, plays a red/black
+/* LOCAL PATCH: Space aborts the show (v2.9). Freezes the stage, plays a red/black
    "emergency code" panel - starting from the show's own light look and washing over to
    full red/black by the time the bar is a third full - then hands control straight back
    to the Harness. Self-contained: the panel carries its own inline styling. */
@@ -421,12 +421,12 @@ function emergency(){
   +'#emergencyCode .ec-ticks:before,#emergencyCode .ec-ticks:after{content:"";position:absolute;width:46px;height:46px;border:2px solid rgba(255,86,64,.55);animation:ecBlink 1.1s steps(2,end) infinite}'
   +'#emergencyCode .ec-ticks:before{left:68px;top:68px;border-right:0;border-bottom:0}'
   +'#emergencyCode .ec-ticks:after{right:68px;bottom:68px;border-left:0;border-top:0}'
+  +'#emergencyCode .ec-brand{position:absolute;left:28px;top:20px;z-index:3;pointer-events:none;opacity:.9;color:#ff5a48;--ink:#ff5a48;--soft:rgba(255,90,72,.62);--bg:#0b0304;--line:rgba(255,70,50,.25);--accent:#ff3b28}'
+  +'@media(min-width:1500px){#emergencyCode .ec-brand{left:45px;top:32px}}'
   +'#emergencyCode .ec-content{position:relative;z-index:2;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;animation:ecInk '+wash+'}'
   +'#emergencyCode .ec-row{font-size:calc(11px + .5vw)}'
   +'#emergencyCode .ec-mid{font-size:calc(12px + .6vw)}'
   +'#emergencyCode .ec-foot{font-size:calc(10px + .4vw);line-height:1.7}'
-+'#emergencyCode .ec-brand{position:absolute;left:28px;top:20px;z-index:3;pointer-events:none;opacity:.9;color:#ff5a48;--ink:#ff5a48;--soft:rgba(255,90,72,.62);--bg:#0b0304;--line:rgba(255,70,50,.25);--accent:#ff3b28}'
-+'@media(min-width:1500px){#emergencyCode .ec-brand{left:45px;top:32px}}'
   +'#emergencyCode .ec-code{font-size:calc(34px + 2.4vw);font-weight:700;letter-spacing:.24em;animation:ecCodeInk '+wash+',ecFlicker 1.3s steps(3,end) '+EC_RED_MS+'ms infinite}'
   +'#emergencyCode .ec-track{position:relative;width:min(46vw,520px);height:3px;background:rgba(23,23,26,.16)}'
   +'#emergencyCode .ec-fill{height:100%;width:0;background:#ff3b28;box-shadow:0 0 14px rgba(255,59,40,.85);transition:width '+EC_BAR_MS+'ms linear}'
@@ -452,7 +452,6 @@ function emergency(){
   +'<div class="ec-track"><div class="ec-fill" id="ecBar"></div></div>'
   +'<div class="ec-foot">跳过验证程序<br>正在紧急启动DeepSeek Harness</div></div>';
  document.head.append(style);document.body.append(host);
- 
  /* Mirror the show's own masthead into the panel: clone the live .brand node (it carries
     the current REV/ID text and the NATIVE badge) and drop its ids so nothing is duplicated. */
  const brandSource=document.querySelector('.masthead .brand');
@@ -465,14 +464,22 @@ function emergency(){
  ecAudio.then(()=>{if(!muted&&!embeddedEnded)ping(.02,196,.5,.035);});
  setTimeout(()=>{if(embeddedEnded)return;ecAudio.then(()=>{if(!muted)window.DSHVoice?.say?.('phase-5');});},EC_VOICE_DELAY_MS);
  setTimeout(()=>{
-  if(window.DSHEmbed?.embedded){finishEmbedded('skip');return;}
-  // Static preview (no host): take the panel away so the show can be replayed.
+  // Hand control back first; only a genuine standalone page clears the panel itself,
+  // otherwise the parent tears the whole frame down and the paused show never shows.
+  if(finishEmbedded('skip'))return;
   host.remove();style.remove();emergencyActive=false;manualPause=false;refresh();
  },EC_PANEL_MS);
 }
 let completionDwell=0,completionSettled=false;
 function finishEmbedded(reason){
- if(!window.DSHEmbed?.embedded||embeddedEnded)return embeddedEnded;
+ if(embeddedEnded)return embeddedEnded;
+ /* LOCAL PATCH: the embed bridge can fail to initialise (window.DSHEmbed undefined), and
+    the old guard then returned early: the show sat until the parent's fail-open timer and
+    Space's panel fell through to the reveal-the-paused-show branch. Speak the parent
+    protocol directly whenever the bridge is unavailable. */
+ const feParams=new URLSearchParams(location.search),feParent=feParams.get('parentOrigin'),feChannel=feParams.get('channel');
+ const feViaBridge=Boolean(window.DSHEmbed?.embedded);
+ if(!feViaBridge&&!(feParent&&feChannel&&window.parent!==window))return false;
  /* LOCAL PATCH: do not cut the closing beat. Continuous playback reached this
     point the same frame the last phase's timer expired, which stopped the score
     and dismissed the overlay before the closing chord and final frame were seen.
@@ -491,7 +498,9 @@ function finishEmbedded(reason){
  local.dispose();cancelAnimationFrame(raf);raf=0;
  entryAnimations.forEach(animation=>animation.cancel());entryAnimations.clear();
  if(audio&&audio.state!=='closed')void audio.close();
- window.DSHEmbed.finish(reason);return true;
+ if(feViaBridge)window.DSHEmbed.finish(reason);
+ else{try{parent.postMessage({source:'dsh-startup',channel:feChannel,type:reason},'*');}catch(_){ /* A blocked parent still cannot block the return. */ }} // LOCAL PATCH: opaque parent origin
+ return true;
 }
 function syncSound(){voice()?.setMuted?.(muted);ui.sound.textContent=muted?'声音 · 关':'声音 · 开';ui.sound.setAttribute('aria-pressed',String(!muted));ui.sound.setAttribute('aria-label',muted?'声音已关闭，点击开启':'声音已开启，点击关闭');if(muted)stopAudio();}
 function syncTheme(){document.documentElement.dataset.theme=light?'light':'dark';ui.theme.textContent=light?'深色':'浅色';ui.theme.setAttribute('aria-label',light?'切换到深色档案':'切换到浅色档案');}
@@ -601,4 +610,5 @@ document.fonts?.ready.then(()=>{layoutDirty=true;refresh();});
 window.addEventListener('pageshow',event=>{if(event.persisted){ui.accessPassword.value='';local.resetVerification();lastFrame=performance.now();void local.connect(true).then(connected=>connected&&savePendingStyle());refresh();announce('预览已恢复。点按画面继续演出。');}});
 window.DSHEmbed?.onSkipRequest(skip);
 syncTheme();applyVisualStyle(visualStyle);renderLocal();motionChange();resize();void local.connect().then(connected=>connected&&savePendingStyle());window.DSHEmbed?.ready();
+ try { fetch('/__dsh_startup/debug?from=preview&event=init&detail=' + encodeURIComponent('search=' + location.search + '|parentDiffers=' + (window.parent !== window) + '|dshembed=' + Boolean(window.DSHEmbed && window.DSHEmbed.embedded) + '|channel=' + String(new URLSearchParams(location.search).get('channel')).length), { cache: 'no-store' }); } catch (_) {}
 })();

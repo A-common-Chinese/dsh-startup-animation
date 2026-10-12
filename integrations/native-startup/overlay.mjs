@@ -11,6 +11,7 @@
 (() => {
   const REVEAL_MS = 520;
   const SETTLE_MS = 480;
+  const dbg = (event, detail = '') => { try { fetch('/__dsh_startup/debug?from=overlay&event=' + encodeURIComponent(event) + '&detail=' + encodeURIComponent(detail), { cache: 'no-store' }); } catch (_) {} };
   const start = async () => {
     try {
       const response = await fetch('/__dsh_startup/launch', { cache: 'no-store', headers: { 'X-DSH-Startup': 'launch' } });
@@ -19,6 +20,7 @@
       const key = `dsh-original-startup:${instance}`;
       let seen = false;
       try { seen = Boolean(sessionStorage.getItem(key)); } catch { /* Storage may be disabled. */ }
+      dbg('mount-check', `enabled=${enabled} seen=${seen} instance=${instance}`);
       if (!enabled || seen) return;
       const channel = crypto.randomUUID().replaceAll('-', '');
       const frame = document.createElement('iframe');
@@ -44,6 +46,7 @@
         [...document.body.children].find(node => node !== frame && node.nodeType === 1) || null;
       let deadline, closing = false;
       const dismiss = () => {
+        dbg('dismiss', `closing=${closing} surface=${Boolean(surface)}`);
         if (closing) return; // 'complete' and Escape can race
         closing = true;
         clearTimeout(deadline);
@@ -60,6 +63,7 @@
         }
         const finish = () => {
           for (const [node, wasInert] of inert) node.inert = wasInert;
+          dbg('finish', 'frame removed');
           frame.remove();
           window.removeEventListener('message', close);
           window.removeEventListener('keydown', escape);
@@ -73,11 +77,14 @@
       };
       const escape = event => { if (event.key === 'Escape') dismiss(); };
       const close = event => {
-        if (event.origin !== location.origin || event.source !== frame.contentWindow || event.data?.source !== 'dsh-startup' || event.data.channel !== channel) return;
+        // LOCAL PATCH: origin equality cannot hold when the window is dsh-app://app and
+        // the film is served over http. event.source is the unforgeable check that matters.
+        if (event.source !== frame.contentWindow || event.data?.source !== 'dsh-startup' || event.data.channel !== channel) return;
         // LOCAL PATCH: any iframe message proves the animation is alive; the old code
         // cleared the fail-open timer only on 'ready', so a slow start killed the show.
         clearTimeout(deadline);
         if (event.data.type === 'ready') { /* cleared above */ }
+        dbg('message', String(event.data.type));
         if (['complete', 'skip'].includes(event.data.type)) dismiss();
       };
       window.addEventListener('message', close);

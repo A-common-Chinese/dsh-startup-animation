@@ -8,18 +8,20 @@
     const params = new URLSearchParams(location.search);
     const origin = new URL(params.get('parentOrigin'));
     const candidate = params.get('channel') || '';
+    // LOCAL PATCH: accept a non-http parent (the desktop window is dsh-app://app). The
+    // channel is a random per-mount value, and the parent re-validates event.source.
     if (parent !== window && params.get('embed') === '1' &&
-        ['http:', 'https:'].includes(origin.protocol) &&
-        origin.origin === params.get('parentOrigin') && /^[a-zA-Z0-9_-]{16,128}$/.test(candidate)) {
-      target = origin.origin;
+        /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(params.get('parentOrigin') || '') &&
+        /^[a-zA-Z0-9_-]{16,128}$/.test(candidate)) {
+      target = params.get('parentOrigin');
       channel = candidate;
     }
   } catch (_) { /* Invalid or missing embedding options keep standalone behavior. */ }
   function send(type) {
-    if (target) parent.postMessage({ source: 'dsh-startup', channel, type }, target);
+    if (target) parent.postMessage({ source: 'dsh-startup', channel, type }, '*'); // LOCAL PATCH: a custom-scheme parent has no comparable origin
   }
   window.addEventListener('message', event => {
-    if (!target || finished || event.source !== parent || event.origin !== target) return;
+    if (!target || finished || event.source !== parent) return; // LOCAL PATCH: see above
     const data = event.data;
     if (!data || data.source !== 'dsh-harness' || data.channel !== channel || data.type !== 'request-skip') return;
     skipRequest?.();

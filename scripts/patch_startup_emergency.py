@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
 """Space aborts the opening show: a red/black emergency panel, then the Harness.
 
-Panel timeline (v2.8.1)
-  EC_PANEL_MS 2400   total on screen (was 1900)
-  EC_BAR_MS   2050   progress bar travel, leaving a 350 ms tail
-  EC_RED_MS    683   = EC_BAR_MS / 3 - the wash from the show's own light look to full
-                     red/black completes exactly when the bar is one third full
-  entrance           the panel fades in over 0.5 s (was 0.22 s); the wash and the
-                     decorative layers ramp in over EC_RED_MS
+Panel (v2.9)
+  EC_PANEL_MS 2400   total on screen; bar travel EC_BAR_MS 2050
+  EC_RED_MS    683   = EC_BAR_MS / 3 - the wash from the show's light look to full
+                     red/black completes exactly when the bar is a third full
+  entrance           panel fades in over 0.5 s; wash and decorative layers over EC_RED_MS
+  masthead           clones the live .masthead .brand into the panel's top-left
+  narration          reuses the addon's own assets/voice/phase-5.wav verbatim
+  exit               hands back through finishEmbedded(); only a genuine standalone page
+                     clears the panel itself, so the paused show is never revealed
 
-Narration: the addon's own phase-5 line ("Welcome, Operator.", assets/voice/phase-5.wav) is
-reused verbatim, so the panel speaks in exactly the original voice. scripts/make_emergency_
-voice.py, match_emergency_voice.py and compare_emergency_voice.py remain available if a
-custom line is ever wanted.
-
-Behaviour: Space freezes the stage, shows the panel, then hands control back. A second
-Space skips the panel at once, but the panel does not advertise that. Enter and clicks
-still advance the show. In a static (non-embedded) preview the panel clears itself.
+finishEmbedded fallback (v2.9)
+  The hand-back used to require window.DSHEmbed, which startup-embed.js only defines once
+  it has validated the embed parameters. When that failed the function returned early and
+  the show sat until the parent's fail-open timer; Space's panel then took its
+  "not embedded" branch, which removed the panel and unpaused the show - the normal
+  animation flashed back before the Harness appeared. The patched function detects the
+  parent parameters itself and posts the same protocol message directly.
 
 Usage:
   python scripts/patch_startup_emergency.py <startup-preview.js> <bridge.mjs> <startup-voice.js>
@@ -27,7 +28,7 @@ import re
 import sys
 from pathlib import Path
 
-V4_MARKER = "LOCAL PATCH: Space aborts the show (v2.8.1)"
+V4_MARKER = "LOCAL PATCH: Space aborts the show (v2.9)"
 BLOCK_RE = re.compile(r"/\* LOCAL PATCH: Space aborts the show[\s\S]*?\},EC_PANEL_MS\);\r?\n\}")
 
 SKIP_ANCHOR = "function skip(){if(accessBlocked()){requireAccess();return;}generation++;starting=false;stopAudio();cancelVoice();sequence.seek(total);phaseAge=0;manualPause=false;local.cancelLoad(false);refresh();announce('已跳过启动演出。');finishEmbedded('skip');}"
@@ -47,8 +48,31 @@ VOICE_NEW = """  // LOCAL PATCH: play a one-off line by name (used by the emerge
   globalThis.DSHVoice = Object.freeze({
     unlock, phase, cancel, say,"""
 
+FE_MARKER = "LOCAL PATCH: the embed bridge can fail to initialise"
+FE_TAIL_OLD = " window.DSHEmbed.finish(reason);return true;"
+FE_TAIL_NEW_LINES = [
+    "|if(feViaBridge)window.DSHEmbed.finish(reason);",
+    "|else{try{parent.postMessage({source:'dsh-startup',channel:feChannel,type:reason},feParent);}catch(_){ /* A blocked parent still cannot block the return. */ }}",
+    "|return true;",
+]
+FE_HEAD_OLD_LINES = [
+    "function finishEmbedded(reason){",
+    "|if(!window.DSHEmbed?.embedded||embeddedEnded)return embeddedEnded;",
+]
+FE_HEAD_NEW_LINES = [
+    "function finishEmbedded(reason){",
+    "|if(embeddedEnded)return embeddedEnded;",
+    "|/* LOCAL PATCH: the embed bridge can fail to initialise (window.DSHEmbed undefined), and",
+    "|   the old guard then returned early: the show sat until the parent's fail-open timer and",
+    "|   Space's panel fell through to the reveal-the-paused-show branch. Speak the parent",
+    "|   protocol directly whenever the bridge is unavailable. */",
+    "|const feParams=new URLSearchParams(location.search),feParent=feParams.get('parentOrigin'),feChannel=feParams.get('channel');",
+    "|const feViaBridge=Boolean(window.DSHEmbed?.embedded);",
+    "|if(!feViaBridge&&!(feParent&&feChannel&&window.parent!==window))return false;",
+]
+
 BLOCK = """
-/* LOCAL PATCH: Space aborts the show (v2.8.1). Freezes the stage, plays a red/black
+/* LOCAL PATCH: Space aborts the show (v2.9). Freezes the stage, plays a red/black
    "emergency code" panel - starting from the show's own light look and washing over to
    full red/black by the time the bar is a third full - then hands control straight back
    to the Harness. Self-contained: the panel carries its own inline styling. */
@@ -74,12 +98,12 @@ function emergency(){
   +'#emergencyCode .ec-ticks:before,#emergencyCode .ec-ticks:after{content:"";position:absolute;width:46px;height:46px;border:2px solid rgba(255,86,64,.55);animation:ecBlink 1.1s steps(2,end) infinite}'
   +'#emergencyCode .ec-ticks:before{left:68px;top:68px;border-right:0;border-bottom:0}'
   +'#emergencyCode .ec-ticks:after{right:68px;bottom:68px;border-left:0;border-top:0}'
+  +'#emergencyCode .ec-brand{position:absolute;left:28px;top:20px;z-index:3;pointer-events:none;opacity:.9;color:#ff5a48;--ink:#ff5a48;--soft:rgba(255,90,72,.62);--bg:#0b0304;--line:rgba(255,70,50,.25);--accent:#ff3b28}'
+  +'@media(min-width:1500px){#emergencyCode .ec-brand{left:45px;top:32px}}'
   +'#emergencyCode .ec-content{position:relative;z-index:2;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;animation:ecInk '+wash+'}'
   +'#emergencyCode .ec-row{font-size:calc(11px + .5vw)}'
   +'#emergencyCode .ec-mid{font-size:calc(12px + .6vw)}'
   +'#emergencyCode .ec-foot{font-size:calc(10px + .4vw);line-height:1.7}'
-+'#emergencyCode .ec-brand{position:absolute;left:28px;top:20px;z-index:3;pointer-events:none;opacity:.9;color:#ff5a48;--ink:#ff5a48;--soft:rgba(255,90,72,.62);--bg:#0b0304;--line:rgba(255,70,50,.25);--accent:#ff3b28}'
-+'@media(min-width:1500px){#emergencyCode .ec-brand{left:45px;top:32px}}'
   +'#emergencyCode .ec-code{font-size:calc(34px + 2.4vw);font-weight:700;letter-spacing:.24em;animation:ecCodeInk '+wash+',ecFlicker 1.3s steps(3,end) '+EC_RED_MS+'ms infinite}'
   +'#emergencyCode .ec-track{position:relative;width:min(46vw,520px);height:3px;background:rgba(23,23,26,.16)}'
   +'#emergencyCode .ec-fill{height:100%;width:0;background:#ff3b28;box-shadow:0 0 14px rgba(255,59,40,.85);transition:width '+EC_BAR_MS+'ms linear}'
@@ -105,7 +129,6 @@ function emergency(){
   +'<div class="ec-track"><div class="ec-fill" id="ecBar"></div></div>'
   +'<div class="ec-foot">跳过验证程序<br>正在紧急启动DeepSeek Harness</div></div>';
  document.head.append(style);document.body.append(host);
- 
  /* Mirror the show's own masthead into the panel: clone the live .brand node (it carries
     the current REV/ID text and the NATIVE badge) and drop its ids so nothing is duplicated. */
  const brandSource=document.querySelector('.masthead .brand');
@@ -118,11 +141,16 @@ function emergency(){
  ecAudio.then(()=>{if(!muted&&!embeddedEnded)ping(.02,196,.5,.035);});
  setTimeout(()=>{if(embeddedEnded)return;ecAudio.then(()=>{if(!muted)window.DSHVoice?.say?.('phase-5');});},EC_VOICE_DELAY_MS);
  setTimeout(()=>{
-  if(window.DSHEmbed?.embedded){finishEmbedded('skip');return;}
-  // Static preview (no host): take the panel away so the show can be replayed.
+  // Hand control back first; only a genuine standalone page clears the panel itself,
+  // otherwise the parent tears the whole frame down and the paused show never shows.
+  if(finishEmbedded('skip'))return;
   host.remove();style.remove();emergencyActive=false;manualPause=false;refresh();
  },EC_PANEL_MS);
 }"""
+
+
+def render(lines, newline, indent):
+    return newline.join(line.replace("|", indent, 1) if line.startswith("|") else line for line in lines)
 
 
 def patch_preview(path: Path) -> str:
@@ -147,6 +175,20 @@ def patch_preview(path: Path) -> str:
         if OLD_KEYS in text:
             text = text.replace(OLD_KEYS, nl(NEW_KEYS), 1)
         action = "inserted panel"
+
+    if FE_MARKER not in text:
+        applied = False
+        for indent in (" ", "  "):
+            head_old = render(FE_HEAD_OLD_LINES, newline, indent)
+            if head_old in text and FE_TAIL_OLD in text:
+                text = text.replace(head_old, render(FE_HEAD_NEW_LINES, newline, indent), 1)
+                text = text.replace(FE_TAIL_OLD, render(FE_TAIL_NEW_LINES, newline, indent), 1)
+                applied = True
+                break
+        if not applied:
+            return "SKIPPED: finishEmbedded anchor not found"
+        action += " + hand-back fallback"
+
     path.write_text(text, encoding="utf-8")
     return action
 

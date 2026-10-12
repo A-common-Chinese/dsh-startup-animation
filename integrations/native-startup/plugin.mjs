@@ -34,6 +34,32 @@ export function localRequest(req, port, token, mutation = false) {
   if (req.headers.origin && req.headers.origin !== `http://${req.headers.host}`) return false;
   return !mutation || (req.headers.origin === `http://${req.headers.host}` && req.headers['x-dsh-token'] === token);
 }
+/* LOCAL DEBUG: record what the inventory load actually produced (or why it failed). */
+function loadLog(entry) {
+  try {
+    appendFileSync(new URL('./load.log', import.meta.url), JSON.stringify({ at: new Date().toISOString(), ...entry }) + '\n');
+  } catch (_) { /* diagnostics must never break a request */ }
+}
+/* LOCAL DEBUG: record every gated /api request and the host's verdict. */
+function requestLog(entry) {
+  try {
+    appendFileSync(new URL('./request.log', import.meta.url), JSON.stringify({ at: new Date().toISOString(), ...entry }) + '\n');
+  } catch (_) { /* diagnostics must never break a request */ }
+}
+/* LOCAL DEBUG: step trace for the inventory walk (it once never returned). */
+function stepLog(entry) {
+  try {
+    appendFileSync(new URL('./step.log', import.meta.url), JSON.stringify({ at: new Date().toISOString(), ...entry }) + '\n');
+  } catch (_) { /* diagnostics must never break a request */ }
+}
+/* LOCAL DEBUG: never let one host call hold the whole inventory hostage. */
+function withTimeout(promise, ms, label) {
+  let timer;
+  return Promise.race([
+    Promise.resolve(promise).finally(() => clearTimeout(timer)),
+    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms); }),
+  ]);
+}
 async function body(req) {
   let content = '';
   for await (const chunk of req) { content += chunk; if (Buffer.byteLength(content) > 8192) throw new Error('Profile is too large.'); }
@@ -41,14 +67,29 @@ async function body(req) {
 }
 export async function inventory(ctx, emit, signal) {
   const started = performance.now(), skills = [], plugins = [], issues = [];
+  stepLog({ step: 'enter', cwd: process.cwd() });
   emit({ type: 'stage', stage: 'skills', status: 'loading' });
   let lease;
   try {
     // Official Web's filesystem providers live in the selected default preset,
     // not the host layer. Borrow that actual revision without creating an Agent
     // or session, and release it after discovery.
-    lease = await ctx.agentPresets?.acquireScope();
-    const snapshot = await ctx.skills.snapshot({ cwd: process.cwd(), signal, ...(lease ? { scope: lease.key } : {}) });
+    lease = await withTimeout(ctx.agentPresets?.acquireScope?.(), 2500, 'agentPresets.acquireScope')
+      .catch(error => { stepLog({ step: 'scope-timeout', message: error.message }); issues.push({ kind: 'skill', name: 'preset-scope', message: error.message }); return undefined; });
+    stepLog({ step: 'scope', hasLease: Boolean(lease) });
+    // LOCAL PATCH: the desktop app's cwd is its install directory, which carries no
+    // project skills. Prefer the user's registered workspace so skill discovery matches
+    // what the user actually has; fall back to the process cwd when none is registered.
+    let cwd = process.cwd();
+    try {
+      const spaces = await ctx.workspaceRegistry?.list?.();
+      const usable = Array.isArray(spaces) ? spaces.find(space => space && typeof space.path === 'string' && space.path) : undefined;
+      if (usable) cwd = usable.path;
+    } catch (_) { /* keep the process cwd */ }
+    stepLog({ step: 'cwd', cwd, viaWorkspace: cwd !== process.cwd() });
+    const snapshot = await withTimeout(ctx.skills.snapshot({ cwd, signal, ...(lease ? { scope: lease.key } : {}) }), 20000, 'skills.snapshot')
+      .catch(error => { stepLog({ step: 'snapshot-timeout', message: error.message }); issues.push({ kind: 'skill', name: 'catalog', message: error.message }); return { skills: [], complete: false }; });
+    stepLog({ step: 'snapshot-done', skills: snapshot.skills.length, complete: snapshot.complete });
     for (const skill of snapshot.skills) {
       const item = { name: skill.name, source: skill.path || `${skill.provider} / ${skill.source}`, status: 'loaded' };
       skills.push(item); emit({ type: 'item', kind: 'skill', ...item });
@@ -82,8 +123,9 @@ export async function inventory(ctx, emit, signal) {
       }
     }
   } catch (error) { issues.push({ kind: 'plugin', name: 'registry', message: error.message }); }
+  stepLog({ step: 'plugins-done', plugins: plugins.length, skills: skills.length, issues: issues.length });
   emit({ type: 'stage', stage: 'plugins', status: 'complete' });
-  const result = { type: 'complete', skills, plugins, issues, elapsed_ms: Math.round(performance.now() - started) };
+  const result = { type: 'complete', skills, plugins, issues, cwd, elapsed_ms: Math.round(performance.now() - started) };
   emit(result); return result;
 }
 
@@ -96,9 +138,17 @@ export function apply(ctx, config = {}) {
     const path = new URL(req.url, `http://${req.headers.host}`).pathname.slice(PREFIX.length);
     if (path === '/launch' || path.startsWith('/api/')) {
       const rejection = ctx.connection.requestRejection(req);
+      requestLog({ path, method: req.method, host: req.headers.host, origin: req.headers.origin, referer: req.headers.referer, cookie: Boolean(req.headers.cookie), secFetchSite: req.headers['sec-fetch-site'], rejection: rejection ?? null });
       if (rejection !== undefined) return json(res, rejection, { error: 'Open the official DSH login URL before reading startup data.' });
     }
     try {
+      if (path === '/debug' && req.method === 'GET') {
+        try {
+          const url = new URL(req.url, `http://${req.headers.host}`);
+          appendFileSync(new URL('./overlay.log', import.meta.url), JSON.stringify({ at: new Date().toISOString(), from: url.searchParams.get('from') || '?', event: url.searchParams.get('event') || '?', detail: url.searchParams.get('detail') || '' }) + '\n');
+        } catch (_) { /* diagnostics must never break a request */ }
+        return json(res, 200, { ok: true });
+      }
       if (path === '/launch' && req.method === 'GET') {
         if (req.headers['x-dsh-startup'] !== 'launch') return json(res, 403, { error: 'Launch must originate from the local startup overlay.' });
         if (launchChoice === undefined) {
@@ -120,7 +170,13 @@ export function apply(ctx, config = {}) {
         res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store' });
         const controller = new AbortController();
         res.on('close', () => controller.abort());
-        await inventory(ctx, event => { if (!res.destroyed) res.write(JSON.stringify(event) + '\n'); }, controller.signal);
+        try {
+          const loaded = await inventory(ctx, event => { if (!res.destroyed) res.write(JSON.stringify(event) + '\n'); }, controller.signal);
+          loadLog({ ok: true, cwd: loaded.cwd, skills: loaded.skills.length, plugins: loaded.plugins.length, issues: loaded.issues.length, elapsed_ms: loaded.elapsed_ms });
+        } catch (error) {
+          loadLog({ ok: false, message: String((error && error.message) || error) });
+          throw error;
+        }
         res.end(); return;
       }
       if (req.method !== 'GET' && req.method !== 'HEAD') return json(res, 405, { error: 'Method not allowed.' });
