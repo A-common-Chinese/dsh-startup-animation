@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Space aborts the opening show: a red/black emergency panel, then the Harness.
 
-Panel timeline (v2.3)
+Panel timeline (v2.8.1)
   EC_PANEL_MS 2400   total on screen (was 1900)
   EC_BAR_MS   2050   progress bar travel, leaving a 350 ms tail
   EC_RED_MS    683   = EC_BAR_MS / 3 - the wash from the show's own light look to full
@@ -27,7 +27,7 @@ import re
 import sys
 from pathlib import Path
 
-V4_MARKER = "LOCAL PATCH: Space aborts the show (v2.6)"
+V4_MARKER = "LOCAL PATCH: Space aborts the show (v2.8.1)"
 BLOCK_RE = re.compile(r"/\* LOCAL PATCH: Space aborts the show[\s\S]*?\},EC_PANEL_MS\);\r?\n\}")
 
 SKIP_ANCHOR = "function skip(){if(accessBlocked()){requireAccess();return;}generation++;starting=false;stopAudio();cancelVoice();sequence.seek(total);phaseAge=0;manualPause=false;local.cancelLoad(false);refresh();announce('已跳过启动演出。');finishEmbedded('skip');}"
@@ -48,7 +48,7 @@ VOICE_NEW = """  // LOCAL PATCH: play a one-off line by name (used by the emerge
     unlock, phase, cancel, say,"""
 
 BLOCK = """
-/* LOCAL PATCH: Space aborts the show (v2.6). Freezes the stage, plays a red/black
+/* LOCAL PATCH: Space aborts the show (v2.8.1). Freezes the stage, plays a red/black
    "emergency code" panel - starting from the show's own light look and washing over to
    full red/black by the time the bar is a third full - then hands control straight back
    to the Harness. Self-contained: the panel carries its own inline styling. */
@@ -78,6 +78,8 @@ function emergency(){
   +'#emergencyCode .ec-row{font-size:calc(11px + .5vw)}'
   +'#emergencyCode .ec-mid{font-size:calc(12px + .6vw)}'
   +'#emergencyCode .ec-foot{font-size:calc(10px + .4vw);line-height:1.7}'
++'#emergencyCode .ec-brand{position:absolute;left:28px;top:20px;z-index:3;pointer-events:none;opacity:.9;color:#ff5a48;--ink:#ff5a48;--soft:rgba(255,90,72,.62);--bg:#0b0304;--line:rgba(255,70,50,.25);--accent:#ff3b28}'
++'@media(min-width:1500px){#emergencyCode .ec-brand{left:45px;top:32px}}'
   +'#emergencyCode .ec-code{font-size:calc(34px + 2.4vw);font-weight:700;letter-spacing:.24em;animation:ecCodeInk '+wash+',ecFlicker 1.3s steps(3,end) '+EC_RED_MS+'ms infinite}'
   +'#emergencyCode .ec-track{position:relative;width:min(46vw,520px);height:3px;background:rgba(23,23,26,.16)}'
   +'#emergencyCode .ec-fill{height:100%;width:0;background:#ff3b28;box-shadow:0 0 14px rgba(255,59,40,.85);transition:width '+EC_BAR_MS+'ms linear}'
@@ -96,13 +98,18 @@ function emergency(){
  host.id='emergencyCode';
  host.setAttribute('role','alertdialog');
  host.setAttribute('aria-label','紧急代码已确认，正在进入 Harness');
- host.innerHTML='<div class="ec-wash"></div><div class="ec-deco"><div class="ec-layer ec-grid"></div><div class="ec-layer ec-glow"></div><div class="ec-layer ec-rings"></div><div class="ec-layer ec-ticks"></div><div class="ec-layer ec-scan"></div></div>'
+ host.innerHTML='<div class="ec-brand"></div><div class="ec-wash"></div><div class="ec-deco"><div class="ec-layer ec-grid"></div><div class="ec-layer ec-glow"></div><div class="ec-layer ec-rings"></div><div class="ec-layer ec-ticks"></div><div class="ec-layer ec-scan"></div></div>'
   +'<div class="ec-content"><div class="ec-row">EMERGENCY ABORT · 紧急中止</div>'
   +'<div class="ec-code">'+code+'</div>'
   +'<div class="ec-mid">紧急代码已确认 · CONFIRMED</div>'
   +'<div class="ec-track"><div class="ec-fill" id="ecBar"></div></div>'
-  +'<div class="ec-foot">跳过验证程序，<br>正在紧急启动DeepSeek Harness</div></div>';
+  +'<div class="ec-foot">跳过验证程序<br>正在紧急启动DeepSeek Harness</div></div>';
  document.head.append(style);document.body.append(host);
+ 
+ /* Mirror the show's own masthead into the panel: clone the live .brand node (it carries
+    the current REV/ID text and the NATIVE badge) and drop its ids so nothing is duplicated. */
+ const brandSource=document.querySelector('.masthead .brand');
+ if(brandSource){const holder=host.querySelector('.ec-brand');if(holder){const clone=brandSource.cloneNode(true);clone.removeAttribute('id');clone.querySelectorAll('[id]').forEach(node=>node.removeAttribute('id'));holder.append(clone);}}
  requestAnimationFrame(()=>{const fill=document.getElementById('ecBar');if(fill)fill.style.width='100%';});
  /* Space can be pressed before the show has started, and both audio paths (the score
     and the narration module) are only initialised inside start(). Acquire them here, in
