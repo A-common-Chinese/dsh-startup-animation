@@ -57,8 +57,16 @@
     active = true;
     play(name, id).finally(() => { if (id === generation) active = false; });
   }
+  // LOCAL PATCH: play a one-off line by name (used by the emergency panel).
+  function say(name) {
+    cancel();
+    if (!unlocked || muted || typeof name !== 'string') return;
+    const id = generation;
+    active = true;
+    play(name, id).finally(() => { if (id === generation) active = false; });
+  }
   globalThis.DSHVoice = Object.freeze({
-    unlock, phase, cancel,
+    unlock, phase, cancel, say,
     setMuted(value) { muted = Boolean(value); if (muted) cancel(); },
     get busy() { return active; },
   });

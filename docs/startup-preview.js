@@ -55,16 +55,23 @@ const cancelVoice=()=>{narratedPhase=-1;voice()?.cancel?.();};
 const narrate=()=>{if(narratedPhase===sequence.phase)return;narratedPhase=sequence.phase;voice()?.phase?.(sequence.phase,{username:ui.identityName.value.trim()||local.profile.username,inventory:local.inventory,connection:local.connection,inventoryMode:local.profile.inventory_mode});};
 const loadFinished=()=>['complete','error','unavailable'].includes(local.inventory.status);
 function beginLocalLoad(){if(!accessBlocked()&&sequence.phase===3&&sequence.playing&&['idle','cancelled'].includes(local.inventory.status))void local.load();}
-/* LOCAL PATCH: beginLocalLoad() was only called from start() (still phase 0, so its
-   phase===3 guard never passed) and from the manual reconnect button. Entering phase 3
-   therefore never started the inventory, loadFinished() stayed false, and barriers()
-   held the stage until the user clicked. Start the load as soon as phase 3 opens, and
-   stop holding after 30 s so a stalled stream can never require a click. */
-let localLoadWaiting=0;
+/* LOCAL PATCH: two behaviours the upstream stage machine got wrong.
+   1. beginLocalLoad() was only called from start() (still phase 0, so its phase===3
+      guard never passed) and from the manual reconnect button, so entering phase 3
+      never started the inventory at all.
+   2. The stage was released the instant the inventory finished loading, after which
+      phases 4 and 5 simply run their fixed durations and the show ends — the skills
+      and plugins list flashed by. Keep the panel readable for PANEL_MIN_MS, and keep
+      the 30 s stall escape so a dead stream still cannot require a click. */
+let localLoadWaiting=0,localLoadDoneAt=0;
+const LOCAL_PANEL_MIN_MS=3200,LOCAL_LOAD_STALL_MS=30000;
 function barriers(){
-  if(sequence.phase===3){beginLocalLoad();if(!localLoadWaiting&&!loadFinished())localLoadWaiting=performance.now();}else localLoadWaiting=0;
-  const localLoadStalled=Boolean(localLoadWaiting)&&performance.now()-localLoadWaiting>30000;
-  for(let i=0;i<6;i++){if((i===2&&accessBlocked())||(i===3&&!loadFinished()&&!localLoadStalled)||(i===sequence.phase&&voice()?.busy))sequence.hold(i);else sequence.release(i);}
+  if(sequence.phase<3){localLoadWaiting=0;localLoadDoneAt=0;}
+  if(sequence.phase===3){beginLocalLoad();if(!localLoadWaiting&&!loadFinished())localLoadWaiting=performance.now();}
+  if(loadFinished()&&!localLoadDoneAt)localLoadDoneAt=performance.now();
+  const localLoadStalled=Boolean(localLoadWaiting)&&performance.now()-localLoadWaiting>LOCAL_LOAD_STALL_MS;
+  const localPanelReadable=Boolean(localLoadDoneAt)&&performance.now()-localLoadDoneAt>=LOCAL_PANEL_MIN_MS;
+  for(let i=0;i<6;i++){if((i===2&&accessBlocked())||(i===3&&!(localPanelReadable||localLoadStalled))||(i===sequence.phase&&voice()?.busy))sequence.hold(i);else sequence.release(i);}
 }
 ui.seek.max=String(total);ui.totalTime.textContent=total.toFixed(2);
   function stopAudio() {
@@ -359,7 +366,7 @@ function frame(now){
  const previous=sequence.phase,wasPlaying=sequence.playing;
  barriers();sequence.tick(delta*speed);beginLocalLoad();
  if(sequence.phase!==previous){phaseAge=0;stopAudio();narrate();if(sequence.playing)scorePhase();announce(sequence.waiting?phases[sequence.phase][0]+'。点按任意位置确认。':'进入'+phases[sequence.phase][0]);}
- if(wasPlaying&&!sequence.playing){stopAudio();if(sequence.completed)announce('深潜就绪。点按任意位置重新体验。');}
+ if(wasPlaying&&!sequence.playing){if(!sequence.completed)stopAudio();if(sequence.completed)announce('深潜就绪。点按任意位置重新体验。');}
  renderUI();drawScene();
  if(sequence.completed&&finishEmbedded('complete'))return;
  if(!raf&&!document.hidden&&(!reducedMotion.matches||sequence.playing))raf=requestAnimationFrame(frame);
@@ -387,8 +394,75 @@ function requireAccess(){if(sequence.phase!==2)jump(2);if(local.locked)ui.access
 function activate(){if(sequence.phase>=2&&accessBlocked()){requireAccess();return;}impulse=1;if(sequence.playing){clickSound();refresh();return;}if(sequence.completed)restart(true);else start();}
 function jump(phase){if(accessBlocked()&&phase>2)phase=2;generation++;starting=false;stopAudio();cancelVoice();sequence.jump(phase);phaseAge=0;manualPause=false;impulse=.65;local.cancelLoad();refresh();announce('已切换到'+phases[phase][0]+'。点按画面播放。');}
 function skip(){if(accessBlocked()){requireAccess();return;}generation++;starting=false;stopAudio();cancelVoice();sequence.seek(total);phaseAge=0;manualPause=false;local.cancelLoad(false);refresh();announce('已跳过启动演出。');finishEmbedded('skip');}
+
+/* LOCAL PATCH: Space aborts the show (v2). Freezes the stage, plays a short red/black
+   "emergency code" panel with an animated background, then hands control straight back
+   to the Harness. Self-contained: the panel carries its own inline styling. */
+let emergencyActive=false;
+const EC_PANEL_MS=1900,EC_BAR_MS=1550,EC_VOICE_DELAY_MS=140;
+function emergency(){
+ if(embeddedEnded)return;
+ if(emergencyActive){finishEmbedded('skip');return;} // second press skips the panel (not advertised on-screen)
+ emergencyActive=true;generation++;starting=false;manualPause=true;
+ sequence.pause();stopAudio();cancelVoice();local.cancelLoad(false);
+ const code='E-'+String(Math.floor(1000+Math.random()*8999));
+ const style=document.createElement('style');
+ style.textContent='#emergencyCode{position:fixed;inset:0;z-index:2147483647;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:20px;overflow:hidden;background:radial-gradient(120% 90% at 50% 0%,#2c0806 0%,#120405 55%,#080203 100%);color:#ff5a48;font-family:inherit;letter-spacing:.16em;text-align:center;animation:ecIn .22s ease-out both}'
+  +'#emergencyCode .ec-layer{position:absolute;inset:0;pointer-events:none}'
+  +'#emergencyCode .ec-grid{background-image:linear-gradient(rgba(255,70,50,.10) 1px,transparent 1px),linear-gradient(90deg,rgba(255,70,50,.10) 1px,transparent 1px);background-size:38px 38px;animation:ecDrift 2.6s linear infinite}'
+  +'#emergencyCode .ec-glow{background:radial-gradient(46% 34% at 50% 46%,rgba(255,59,40,.30) 0%,rgba(255,59,40,.07) 42%,transparent 72%);animation:ecPulse 1.15s ease-in-out infinite alternate}'
+  +'#emergencyCode .ec-scan{height:22%;top:-22%;inset:auto 0 auto 0;background:linear-gradient(180deg,transparent,rgba(255,86,64,.20) 45%,rgba(255,140,120,.30) 50%,rgba(255,86,64,.20) 55%,transparent);animation:ecSweep 1.5s linear infinite}'
+  +'#emergencyCode .ec-rings{position:absolute;left:50%;top:46%;translate:-50% -50%;width:min(58vw,620px);aspect-ratio:1;border-radius:50%;border:1px dashed rgba(255,70,50,.22);animation:ecSpin 7s linear infinite}'
+  +'#emergencyCode .ec-rings:after{content:"";position:absolute;inset:16%;border-radius:50%;border:1px solid rgba(255,70,50,.30);animation:ecPing 1.5s ease-out infinite}'
+  +'#emergencyCode .ec-ticks:before,#emergencyCode .ec-ticks:after{content:"";position:absolute;width:46px;height:46px;border:2px solid rgba(255,86,64,.55);animation:ecBlink 1.1s steps(2,end) infinite}'
+  +'#emergencyCode .ec-ticks:before{left:68px;top:68px;border-right:0;border-bottom:0}'
+  +'#emergencyCode .ec-ticks:after{right:68px;bottom:68px;border-left:0;border-top:0}'
+  +'#emergencyCode .ec-code{font-size:calc(34px + 2.4vw);font-weight:700;letter-spacing:.24em;color:#ff3b28;text-shadow:0 0 28px rgba(255,59,40,.55);animation:ecFlicker 1.3s steps(3,end) infinite}'
+  +'#emergencyCode .ec-row{position:relative;z-index:1;font-size:calc(11px + .5vw);opacity:.72}'
+  +'#emergencyCode .ec-mid{position:relative;z-index:1;font-size:calc(12px + .6vw);opacity:.9}'
+  +'#emergencyCode .ec-foot{position:relative;z-index:1;font-size:calc(10px + .4vw);opacity:.58}'
+  +'#emergencyCode .ec-track{position:relative;z-index:1;width:min(46vw,520px);height:3px;background:rgba(255,90,72,.22);overflow:hidden}'
+  +'#emergencyCode .ec-fill{height:100%;width:0;background:#ff3b28;box-shadow:0 0 14px rgba(255,59,40,.85);transition:width '+EC_BAR_MS+'ms linear}'
+  +'@keyframes ecIn{from{opacity:0}to{opacity:1}}'
+  +'@keyframes ecDrift{from{background-position:0 0}to{background-position:38px 38px}}'
+  +'@keyframes ecPulse{from{opacity:.55}to{opacity:1}}'
+  +'@keyframes ecSweep{from{top:-22%}to{top:100%}}'
+  +'@keyframes ecSpin{from{rotate:0deg}to{rotate:360deg}}'
+  +'@keyframes ecPing{from{transform:scale(.86);opacity:.85}to{transform:scale(1.12);opacity:0}}'
+  +'@keyframes ecBlink{50%{opacity:.25}}'
+  +'@keyframes ecFlicker{0%,100%{opacity:1}48%{opacity:.82}52%{opacity:.94}}';
+ const host=document.createElement('div');
+ host.id='emergencyCode';
+ host.setAttribute('role','alertdialog');
+ host.setAttribute('aria-label','紧急代码已确认，正在进入 Harness');
+ host.innerHTML='<div class="ec-layer ec-grid"></div><div class="ec-layer ec-glow"></div><div class="ec-layer ec-rings"></div><div class="ec-layer ec-ticks"></div><div class="ec-layer ec-scan"></div>'
+  +'<div class="ec-row">EMERGENCY ABORT · 紧急中止</div>'
+  +'<div class="ec-code">'+code+'</div>'
+  +'<div class="ec-mid">紧急代码已确认 · CONFIRMED</div>'
+  +'<div class="ec-track"><div class="ec-fill" id="ecBar"></div></div>'
+  +'<div class="ec-foot">正在进入 HARNESS</div>';
+ document.head.append(style);document.body.append(host);
+ requestAnimationFrame(()=>{const fill=document.getElementById('ecBar');if(fill)fill.style.width='100%';});
+ if(!muted)ping(.02,196,.5,.035);
+ setTimeout(()=>{if(!embeddedEnded)window.DSHVoice?.say?.('emergency');},EC_VOICE_DELAY_MS);
+ setTimeout(()=>finishEmbedded('skip'),EC_PANEL_MS);
+}
+let completionDwell=0,completionSettled=false;
 function finishEmbedded(reason){
  if(!window.DSHEmbed?.embedded||embeddedEnded)return embeddedEnded;
+ /* LOCAL PATCH: do not cut the closing beat. Continuous playback reached this
+    point the same frame the last phase's timer expired, which stopped the score
+    and dismissed the overlay before the closing chord and final frame were seen.
+    Wait for the narration to end, then hold the last frame for ~1.4 s. */
+ if(reason==='complete'&&!completionSettled){
+   if(completionDwell===0)completionDwell=performance.now();
+   const voiceBusy=Boolean(window.DSHVoice&&window.DSHVoice.busy);
+   if(voiceBusy||performance.now()-completionDwell<1400){
+     setTimeout(()=>{if(!embeddedEnded)finishEmbedded(reason);},160);
+     return true;
+   }
+   completionSettled=true;
+ }
  if(accessBlocked()){requireAccess();return false;}
  embeddedEnded=true;generation++;starting=false;sequence.pause();stopAudio();cancelVoice();
  local.dispose();cancelAnimationFrame(raf);raf=0;
@@ -428,7 +502,8 @@ document.addEventListener('keydown',e=>{
  if(e.key.toLowerCase()==='p'){e.preventDefault();manualPause?start():pause();return;}
  if(/^[123]$/.test(e.key)){e.preventDefault();if(sequence.choose(Number(e.key)-1)){impulse=.8;refresh();announce('已切换扫描通道 '+e.key);}return;}
  if((e.key==='ArrowLeft'||e.key==='ArrowRight')&&sequence.phase<5){e.preventDefault();sequence.choose((sequence.choices[sequence.phase]+(e.key==='ArrowRight'?1:2))%3);impulse=.5;refresh();return;}
- if((e.key==='Enter'||e.key===' ')&&!e.target.closest('button')){e.preventDefault();activate();}
+ if(e.key==='Enter'&&!e.target.closest('button')){e.preventDefault();activate();return;}
+ if(e.key===' '&&!e.target.closest('button')){e.preventDefault();emergency();return;} // LOCAL PATCH: Space = emergency abort
 });
 document.addEventListener('visibilitychange',()=>{if(document.hidden){if(sequence.playing||starting)pause('页面在后台，演出已暂停。');else cancelVoice();cancelAnimationFrame(raf);raf=0;stopAudio();}else wake();});
 function motionChange(){document.body.classList.toggle('reduced',reducedMotion.matches);if(reducedMotion.matches){clearTransition();entryAnimations.forEach(animation=>animation.cancel());entryAnimations.clear();}refresh();}reducedMotion.addEventListener('change',motionChange);

@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { appendFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { resolve, sep, extname } from 'node:path';
@@ -14,6 +15,18 @@ const ACTIVE = 2, FAILED = 3;
 const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json', '.wav': 'audio/wav', '.mp3': 'audio/mpeg', '.woff2': 'font/woff2', '.txt': 'text/plain; charset=utf-8' };
 const json = (res, status, value) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(value)); };
 
+/* LOCAL DEBUG: log the guard's inputs on failure only, so a rejected mutation can be
+   told apart from a rejected Host/Origin. The token itself is never written. */
+function guardLog(req, port, token, mutation) {
+  try {
+    appendFileSync(new URL('./guard.log', import.meta.url), JSON.stringify({
+      at: new Date().toISOString(), mutation, method: req.method, url: req.url,
+      host: req.headers.host, origin: req.headers.origin, remote: req.socket?.remoteAddress,
+      tokenLen: (req.headers['x-dsh-token'] || '').length, expectedTokenLen: token.length,
+      tokenMatch: req.headers['x-dsh-token'] === token, port,
+    }) + '\n');
+  } catch (_) { /* diagnostics must never break a request */ }
+}
 export function localRequest(req, port, token, mutation = false) {
   const hosts = [`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`];
   if (!hosts.includes(req.headers.host)) return false;
@@ -79,7 +92,7 @@ export function apply(ctx, config = {}) {
   let launchChoice;
   const register = route => ctx.effect(() => ctx.webServer.register(route), `startup ${route.path}`);
   register({ kind: 'prefix', path: PREFIX, async handler(req, res) {
-    if (!localRequest(req, ctx.webServer.port, token)) return json(res, 403, { error: 'Startup is available only on this local machine.' });
+    if (!localRequest(req, ctx.webServer.port, token)) { guardLog(req, ctx.webServer.port, token, false); return json(res, 403, { error: 'Startup is available only on this local machine.' }); }
     const path = new URL(req.url, `http://${req.headers.host}`).pathname.slice(PREFIX.length);
     if (path === '/launch' || path.startsWith('/api/')) {
       const rejection = ctx.connection.requestRejection(req);
@@ -96,7 +109,7 @@ export function apply(ctx, config = {}) {
       }
       if (path === '/api/profile') {
         if (req.method === 'POST') {
-          if (!localRequest(req, ctx.webServer.port, token, true)) return json(res, 403, { error: 'Invalid local request.' });
+          if (!localRequest(req, ctx.webServer.port, token, true)) { guardLog(req, ctx.webServer.port, token, true); return json(res, 403, { error: 'Invalid local request.' }); }
           saveSettings(profileInput(await body(req)));
         } else if (req.method !== 'GET') return json(res, 405, { error: 'Method not allowed.' });
         const value = settings();

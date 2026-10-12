@@ -74,7 +74,10 @@
       const escape = event => { if (event.key === 'Escape') dismiss(); };
       const close = event => {
         if (event.origin !== location.origin || event.source !== frame.contentWindow || event.data?.source !== 'dsh-startup' || event.data.channel !== channel) return;
-        if (event.data.type === 'ready') clearTimeout(deadline);
+        // LOCAL PATCH: any iframe message proves the animation is alive; the old code
+        // cleared the fail-open timer only on 'ready', so a slow start killed the show.
+        clearTimeout(deadline);
+        if (event.data.type === 'ready') { /* cleared above */ }
         if (['complete', 'skip'].includes(event.data.type)) dismiss();
       };
       window.addEventListener('message', close);
@@ -82,7 +85,7 @@
       frame.addEventListener('error', dismiss, { once: true });
       // Fail open to the official UI if a missing asset prevents the shared
       // animation from announcing readiness. A ready sequence has no timeout.
-      deadline = setTimeout(dismiss, 15000);
+      deadline = setTimeout(dismiss, 30000);
       document.body.append(frame); frame.focus();
     } catch (error) { console.warn('DSH startup animation unavailable:', error.message); }
   };

@@ -18,6 +18,7 @@
 | 安装方式 | `install_dsh.py` 装 Rust 应用；`install_native_startup.py` 装 addon（**网页/CLI** 路径，需 npm） | `install_startup_animation.py` **默认装进 DSH 桌面端**（不需要 npm）；同时保留上游的网页/CLI 安装器 |
 | 卡在"展开能力档案" | 有：进入第 3 阶段后无人发起读取，必须手动点一下才继续 | **已修**：进入第 3 阶段即自动读取，并加 30 秒兜底 |
 | 演出收尾 | 同一 tick 内抽掉 iframe，官方界面瞬间出现 | **已修**：交叉淡出（影片 520 ms 淡出 + 底层由 0.55 亮度 480 ms 落定） |
+| 播放中的 `Space` | 与 `Enter` 同义：推进当前阶段 | **新功能**：紧急中止 → 1.9 秒红黑面板（动画背景 + 同款旁白）→ 直接进入 Harness |
 | 与上游同步 | — | 历史已大幅分叉，**无法 `merge` 上游**；上游更新需手工挑选 |
 | README | 563 行，讲整个 Rust 项目 | 本文件，只讲这个 addon |
 
@@ -119,12 +120,13 @@ python scripts/install_native_startup.py --prefix /path/prefix  # 不污染全�
 
 | 键 | 行为 |
 |---|---|
-| 点击画面 / `Space` | 开始播放；播放中触发扫描波 |
-| `Enter` / `Space` | 推进当前阶段 |
-| `Esc` | 跳过演出，直接返回官方 Harness |
+| 点击画面 / `Enter` | 开始播放；播放中触发扫描波、推进当前阶段 |
+| **`Space`** | **紧急中止**：立刻冻住当前演出 → 播一段约 **1.9 秒**的**红黑紧急代码确认**（带动画背景：网格漂移 / 扫描带 / 脉冲辉光 / 雷达环，并念同款英文旁白 `Emergency confirmed.`）→ 自动进入 Harness。该面板播放中再按一次 `Space` 可立即跳过（**面板上不显示该提示**） |
+| `Esc` | 跳过演出，直接返回官方 Harness（不放紧急面板） |
 | `C` | 收起/展开设置面板 |
 | `M` | 静音 |
 | ← / → | 切换当前阶段的选择项 |
+| `R` / `P` | 重播 / 暂停 |
 
 第一次播放需要一次用户交互才能出声——浏览器对无手势的音频有自动播放限制，这是浏览器策略，不是本插件可绕过的。
 
@@ -234,13 +236,16 @@ git checkout main && git merge upstream/main
 | `integrations/native-startup/state.mjs` | 偏好读写与 `startup next` 的一次性认领 |
 | `integrations/native-startup/test.mjs` | 集成自测（`node --test test.mjs`） |
 | `docs/startup-*.js` `*.html` `*.css` | 动画本体与预览页（打包时复制进 `assets/`） |
-| `docs/assets/{voice,fonts,licenses}` | 旁白 WAV、字体子集、素材许可 |
+| `docs/assets/{voice,fonts,licenses}` | 旁白 WAV（含 `emergency.wav` 紧急面板旁白）、字体子集、素材许可 |
 | `scripts/install_startup_animation.py` | **桌面端安装器（默认路径）**：暂存 addon 并把挂载块写进 profile |
 | `scripts/install_native_startup.py` | 上游安装器：组装 npm 包并全局安装（网页/CLI 路径） |
+| `scripts/patch_startup_*.py` | 本 fork 的补丁脚本（清单自动加载 / 收尾交叉淡出 / 面板停留 / token 自愈 / 紧急面板），全部幂等、可从历史版本重放 |
+| `scripts/make_emergency_voice.py` | 用本地 ZipVoice 生成紧急面板旁白并做后处理（24 kHz / −2.16 dBFS / 6 ms 淡化） |
 
 ## 许可与素材来源
 
 - **代码**（`integrations/native-startup/**`、`docs/startup-*.{js,html,css}`、`scripts/` 下的维护脚本）：**MIT**（`integrations/native-startup/LICENSE`）
 - **美术与音频**（`docs/assets/**`）：**不在 MIT 覆盖范围**，按 as-is 随插件分发，仅供运行本插件使用，不授予再许可。逐项来源记录在 `docs/assets/voice/manifest.json`（旁白生成方式、模型、参考音与 SHA-256）、`docs/assets/fonts/README.md`、`docs/assets/licenses/RhineLabUI-MIT.txt`
 - 旁白由 `Qwen/Qwen3-TTS-12Hz-1.7B-Base`（Apache-2.0）以声线克隆方式预生成，24 kHz PCM16
+- `emergency.wav`（`Space` 紧急面板那一句）**不在上面这批里**：它用 sherpa-onnx ZipVoice（distill int8，CPU，本地离线）以**同一批参考音**生成，因此音色一致；出处、参数与 SHA-256 见 `docs/assets/voice/emergency.json`
 - 中文字体为 Noto Sans SC 子集（`docs/assets/fonts/dsh-industrial-sc.woff2`），许可见 `docs/assets/fonts/OFL-NotoSansSC.txt`
