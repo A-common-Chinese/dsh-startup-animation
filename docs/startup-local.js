@@ -20,7 +20,12 @@
       this.playbackVerified = false; this.previewOnly = false;
       this.unlocking = false; this.accessMessage = ''; this._unlockGeneration = 0;
     }
-    emit() { this.onChange(this); }
+    emit() {
+      // LOCAL PATCH: coalesce streamed inventory renders - one per frame, not one per item.
+      if (this._emitPending) return;
+      const run = () => { this._emitPending = 0; this.onChange(this); };
+      this._emitPending = (typeof requestAnimationFrame === 'function') ? requestAnimationFrame(run) : setTimeout(run, 16);
+    }
     async failure(response, fallback) {
       let detail = '';
       try { const body = await response.json(); detail = text(body.message) || text(body.error?.message) || text(body.error); } catch (_) { /* An HTML error is not an API response. */ }
