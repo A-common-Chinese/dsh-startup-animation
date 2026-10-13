@@ -72,6 +72,25 @@ cd dsh-startup-animation
 python scripts/install_startup_animation.py
 ```
 
+#### 免 Python 的 PowerShell 安装器（更适合转发给别人）
+
+仓库里也带一份纯 PowerShell 安装器 —— Windows 自带 PowerShell 就能跑，接收方**不需要 Python / npm / Rust**：
+
+```powershell
+.\scripts\install_startup_animation.ps1              # 安装（自动选 desktop profile）
+.\scripts\install_startup_animation.ps1 -DryRun      # 只看会改什么，不落盘
+.\scripts\install_startup_animation.ps1 -Uninstall   # 整块移除挂载（不动其它设置）
+.\scripts\install_startup_animation.ps1 -ProfileName <名字> -DshHome <路径>
+```
+
+打包成一个「双击即装」的转发包（输出到桌面：`安装.cmd` + `使用说明.md` + `plugin\`）：
+
+```powershell
+.\scripts\build_install_package.ps1
+```
+
+两个安装器行为一致：都只做「暂存插件目录 + 在 profile 的 `cordis.patch.yml` 写入带标记的挂载块」，改写前都会留一份 `.bak-startup-<时间戳>` 备份，且都可反复运行（幂等）。
+
 它只做两件事，都不碰全局环境：
 
 1. 把 addon 暂存到 `$DSH_HOME/startup-animation/plugin/`（默认 `~/.dsh/…`）
