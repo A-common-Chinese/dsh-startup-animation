@@ -303,8 +303,13 @@ function renderLocal(){
  for(const [kind,list,count,status] of [['skills',ui.skillsList,ui.skillsCount,ui.skillsState],['plugins',ui.pluginsList,ui.pluginsCount,ui.pluginsState]]){
   const items=inventory[kind],loaded=items.filter(item=>item.status==='loaded').length;
   const known=inventory.status==='complete'||items.length>0||inventory.stages[kind]==='complete';
-  setText(count,known?String(loaded).padStart(2,'0'):inventory.status==='loading'?'…':'—',{kind:'roll'});
-  setText(status,inventory.status==='complete'?'已完成':inventory.status==='loading'||inventory.stages[kind]==='loading'?'载入中':inventory.stages[kind]==='complete'?'已返回':'未载入',{kind:'roll',delay:.1}); // LOCAL PATCH: 未载入 / 载入中
+  const settle=inventory.status==='complete';
+  const countText=known?String(loaded).padStart(2,'0'):inventory.status==='loading'?'…':'—';
+  const statusText=inventory.status==='complete'?'已完成':inventory.status==='loading'||inventory.stages[kind]==='loading'?'载入中':inventory.stages[kind]==='complete'?'已返回':'未载入';
+  /* LOCAL PATCH: animate the stage once, when the read settles. Rolling the counters and
+     status words on every streamed update made the stage look like it animated twice. */
+  if(settle){setText(count,countText,{kind:'roll'});setText(status,statusText,{kind:'roll',delay:.1});}
+  else{textMotion.remove(count);textMotion.remove(status);count.textContent=countText;status.textContent=statusText;}
   /* LOCAL PATCH: paint the list once, on the finished catalog. Streaming rows were
      rebuilt with replaceChildren() on every update, which re-inserted the nodes and
      replayed their entry animation - once while items arrived and again at completion. */
