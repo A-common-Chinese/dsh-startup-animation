@@ -5,7 +5,6 @@
 > **本仓库是一个被裁剪过的 fork，只保留这个动画。**
 > - 上游：https://github.com/Ar1haraNaN7mI/deepseek-harness-rust-optimize
 > - 本 fork：https://github.com/A-common-Chinese/deepseek-harness-rust-optimize
-> - 两处修复所在分支（相对上游的干净 diff，可直接提 PR）：`fix/startup-auto-inventory-smooth-handoff`
 >
 > 上游仓库同时是一个用 Rust 重写的 DSH 风格助手（CLI / TUI / 网页 / Windows 桌面端 / 电脑操作 / 桌宠）。**本 fork 已把与本 addon 无关的内容全部删除**，只留动画本体、addon 包与安装/维护脚本。
 
@@ -224,7 +223,9 @@ git fetch upstream
 git checkout main && git merge upstream/main
 ```
 
-本 fork 的 `main` 只多出这份 README；两处修复在独立分支上，便于单独评审与提 PR。
+本 fork 的 `main` 是**裁剪过的树**：它删掉了上游与本 addon 无关的全部内容，所以 `merge upstream/main` 会把这些文件原样带回来。上游有更新时请**手工挑选**（或按文件覆盖），不要直接合并。
+
+本 fork 对上游的修复集中在 `fix/startup-auto-inventory-smooth-handoff` 分支：4 个提交、仅触及 3 个文件，且**已向上游提交 PR（#5）**——需要跟进度或参与评审就到上游那个 PR 页去看。
 
 ## 目录结构
 
