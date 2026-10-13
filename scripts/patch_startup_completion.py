@@ -31,11 +31,12 @@ function finishEmbedded(reason){
   /* LOCAL PATCH: do not cut the closing beat. Continuous playback reached this
      point the same frame the last phase's timer expired, which stopped the score
      and dismissed the overlay before the closing chord and final frame were seen.
-     Wait for the narration to end, then hold the last frame for ~1.4 s. */
+     Wait for the narration to end, then hold the last frame for ~0.3 s so the hand-back
+     stays immediate. */
   if(reason==='complete'&&!completionSettled){
     if(completionDwell===0)completionDwell=performance.now();
     const voiceBusy=Boolean(window.DSHVoice&&window.DSHVoice.busy);
-    if(voiceBusy||performance.now()-completionDwell<1400){
+    if(voiceBusy||performance.now()-completionDwell<300){
       setTimeout(()=>{if(!embeddedEnded)finishEmbedded(reason);},160);
       return true;
     }
