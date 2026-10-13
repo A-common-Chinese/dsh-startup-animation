@@ -304,7 +304,7 @@ function renderLocal(){
   const items=inventory[kind],loaded=items.filter(item=>item.status==='loaded').length;
   const known=inventory.status==='complete'||items.length>0||inventory.stages[kind]==='complete';
   setText(count,known?String(loaded).padStart(2,'0'):inventory.status==='loading'?'…':'—',{kind:'roll'});
-  setText(status,inventory.status==='complete'?'已完成':inventory.stages[kind]==='loading'?'正在读取':inventory.stages[kind]==='complete'?'已返回':inventory.status==='loading'?'等待本地结果':'尚未读取',{kind:'roll',delay:.1});
+  setText(status,inventory.status==='complete'?'已完成':inventory.status==='loading'||inventory.stages[kind]==='loading'?'载入中':inventory.stages[kind]==='complete'?'已返回':'未载入',{kind:'roll',delay:.1}); // LOCAL PATCH: 未载入 / 载入中
   /* LOCAL PATCH: paint the list once, on the finished catalog. Streaming rows were
      rebuilt with replaceChildren() on every update, which re-inserted the nodes and
      replayed their entry animation - once while items arrived and again at completion. */
@@ -313,7 +313,7 @@ function renderLocal(){
   textMotion.remove(list);
   const itemRows=rows(items,kind);
   if(items.length){list.classList.remove('dsh-lettering');list.replaceChildren(...itemRows);}
-  else setText(list,inventory.status==='complete'?'此工作区没有加载项目。':inventory.status==='loading'?'等待本地 DSH 返回真实名称…':'未读取真实数据。',{kind:'mask',delay:.1});
+  else setText(list,inventory.status==='complete'?'此工作区没有加载项目。':inventory.status==='loading'?'载入中…':'未载入。',{kind:'mask',delay:.1});
  }
  setText(ui.inventoryMessage,inventory.message+(inventory.status==='complete'&&inventory.elapsed_ms!==null?' · '+inventory.elapsed_ms+' ms':''),{kind:'mask'});
  setText(ui.inventoryIssues,inventory.issues.map(item=>'! '+item.name+' · '+item.message).join('\n'),{kind:'mask',delay:.1});
@@ -635,6 +635,6 @@ document.fonts?.ready.then(()=>{layoutDirty=true;refresh();});
  window.addEventListener('pagehide',()=>{generation++;starting=false;sequence.pause();manualPause=true;clearTransition();stopAudio();cancelVoice();local.dispose();cancelAnimationFrame(raf);raf=0;if(audio&&audio.state!=='closed')audio.close();});
 window.addEventListener('pageshow',event=>{if(event.persisted){ui.accessPassword.value='';local.resetVerification();lastFrame=performance.now();void local.connect(true).then(connected=>connected&&savePendingStyle());refresh();announce('预览已恢复。点按画面继续演出。');}});
 window.DSHEmbed?.onSkipRequest(skip);
-syncTheme();applyVisualStyle(visualStyle);renderLocal();motionChange();resize();void local.connect().then(connected=>{if(!connected)return;savePendingStyle();/* LOCAL PATCH: warm the local inventory so the capability stage has nothing to wait for. */if(['idle','cancelled'].includes(local.inventory.status))void local.load();});window.DSHEmbed?.ready();
+syncTheme();applyVisualStyle(visualStyle);renderLocal();motionChange();resize();void local.connect().then(connected=>connected&&savePendingStyle());window.DSHEmbed?.ready();
  try { fetch('/__dsh_startup/debug?from=preview&event=init&detail=' + encodeURIComponent('search=' + location.search + '|parentDiffers=' + (window.parent !== window) + '|dshembed=' + Boolean(window.DSHEmbed && window.DSHEmbed.embedded) + '|channel=' + String(new URLSearchParams(location.search).get('channel')).length), { cache: 'no-store' }); } catch (_) {}
 })();
