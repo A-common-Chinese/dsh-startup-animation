@@ -55,16 +55,23 @@ const cancelVoice=()=>{narratedPhase=-1;voice()?.cancel?.();};
 const narrate=()=>{if(narratedPhase===sequence.phase)return;narratedPhase=sequence.phase;voice()?.phase?.(sequence.phase,{username:ui.identityName.value.trim()||local.profile.username,inventory:local.inventory,connection:local.connection,inventoryMode:local.profile.inventory_mode});};
 const loadFinished=()=>['complete','error','unavailable'].includes(local.inventory.status);
 function beginLocalLoad(){if(!accessBlocked()&&sequence.phase===3&&sequence.playing&&['idle','cancelled'].includes(local.inventory.status))void local.load();}
-/* LOCAL PATCH: beginLocalLoad() was only called from start() (still phase 0, so its
-   phase===3 guard never passed) and from the manual reconnect button. Entering phase 3
-   therefore never started the inventory, loadFinished() stayed false, and barriers()
-   held the stage until the user clicked. Start the load as soon as phase 3 opens, and
-   stop holding after 30 s so a stalled stream can never require a click. */
-let localLoadWaiting=0;
+/* LOCAL PATCH: two behaviours the upstream stage machine got wrong.
+   1. beginLocalLoad() was only called from start() (still phase 0, so its phase===3
+      guard never passed) and from the manual reconnect button, so entering phase 3
+      never started the inventory at all.
+   2. The stage was released the instant the inventory finished loading, after which
+      phases 4 and 5 simply run their fixed durations and the show ends — the skills
+      and plugins list flashed by. Keep the panel readable for PANEL_MIN_MS, and keep
+      the 30 s stall escape so a dead stream still cannot require a click. */
+let localLoadWaiting=0,localLoadDoneAt=0;
+const LOCAL_PANEL_MIN_MS=3200,LOCAL_LOAD_STALL_MS=30000;
 function barriers(){
-  if(sequence.phase===3){beginLocalLoad();if(!localLoadWaiting&&!loadFinished())localLoadWaiting=performance.now();}else localLoadWaiting=0;
-  const localLoadStalled=Boolean(localLoadWaiting)&&performance.now()-localLoadWaiting>30000;
-  for(let i=0;i<6;i++){if((i===2&&accessBlocked())||(i===3&&!loadFinished()&&!localLoadStalled)||(i===sequence.phase&&voice()?.busy))sequence.hold(i);else sequence.release(i);}
+  if(sequence.phase<3){localLoadWaiting=0;localLoadDoneAt=0;}
+  if(sequence.phase===3){beginLocalLoad();if(!localLoadWaiting&&!loadFinished())localLoadWaiting=performance.now();}
+  if(loadFinished()&&!localLoadDoneAt)localLoadDoneAt=performance.now();
+  const localLoadStalled=Boolean(localLoadWaiting)&&performance.now()-localLoadWaiting>LOCAL_LOAD_STALL_MS;
+  const localPanelReadable=Boolean(localLoadDoneAt)&&performance.now()-localLoadDoneAt>=LOCAL_PANEL_MIN_MS;
+  for(let i=0;i<6;i++){if((i===2&&accessBlocked())||(i===3&&!(localPanelReadable||localLoadStalled))||(i===sequence.phase&&voice()?.busy))sequence.hold(i);else sequence.release(i);}
 }
 ui.seek.max=String(total);ui.totalTime.textContent=total.toFixed(2);
   function stopAudio() {
@@ -359,7 +366,7 @@ function frame(now){
  const previous=sequence.phase,wasPlaying=sequence.playing;
  barriers();sequence.tick(delta*speed);beginLocalLoad();
  if(sequence.phase!==previous){phaseAge=0;stopAudio();narrate();if(sequence.playing)scorePhase();announce(sequence.waiting?phases[sequence.phase][0]+'。点按任意位置确认。':'进入'+phases[sequence.phase][0]);}
- if(wasPlaying&&!sequence.playing){stopAudio();if(sequence.completed)announce('深潜就绪。点按任意位置重新体验。');}
+ if(wasPlaying&&!sequence.playing){if(!sequence.completed)stopAudio();if(sequence.completed)announce('深潜就绪。点按任意位置重新体验。');}
  renderUI();drawScene();
  if(sequence.completed&&finishEmbedded('complete'))return;
  if(!raf&&!document.hidden&&(!reducedMotion.matches||sequence.playing))raf=requestAnimationFrame(frame);
@@ -387,8 +394,22 @@ function requireAccess(){if(sequence.phase!==2)jump(2);if(local.locked)ui.access
 function activate(){if(sequence.phase>=2&&accessBlocked()){requireAccess();return;}impulse=1;if(sequence.playing){clickSound();refresh();return;}if(sequence.completed)restart(true);else start();}
 function jump(phase){if(accessBlocked()&&phase>2)phase=2;generation++;starting=false;stopAudio();cancelVoice();sequence.jump(phase);phaseAge=0;manualPause=false;impulse=.65;local.cancelLoad();refresh();announce('已切换到'+phases[phase][0]+'。点按画面播放。');}
 function skip(){if(accessBlocked()){requireAccess();return;}generation++;starting=false;stopAudio();cancelVoice();sequence.seek(total);phaseAge=0;manualPause=false;local.cancelLoad(false);refresh();announce('已跳过启动演出。');finishEmbedded('skip');}
+let completionDwell=0,completionSettled=false;
 function finishEmbedded(reason){
  if(!window.DSHEmbed?.embedded||embeddedEnded)return embeddedEnded;
+ /* LOCAL PATCH: do not cut the closing beat. Continuous playback reached this
+    point the same frame the last phase's timer expired, which stopped the score
+    and dismissed the overlay before the closing chord and final frame were seen.
+    Wait for the narration to end, then hold the last frame for ~1.4 s. */
+ if(reason==='complete'&&!completionSettled){
+   if(completionDwell===0)completionDwell=performance.now();
+   const voiceBusy=Boolean(window.DSHVoice&&window.DSHVoice.busy);
+   if(voiceBusy||performance.now()-completionDwell<1400){
+     setTimeout(()=>{if(!embeddedEnded)finishEmbedded(reason);},160);
+     return true;
+   }
+   completionSettled=true;
+ }
  if(accessBlocked()){requireAccess();return false;}
  embeddedEnded=true;generation++;starting=false;sequence.pause();stopAudio();cancelVoice();
  local.dispose();cancelAnimationFrame(raf);raf=0;
