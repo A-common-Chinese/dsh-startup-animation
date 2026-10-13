@@ -32,7 +32,11 @@ export function localRequest(req, port, token, mutation = false) {
   if (!hosts.includes(req.headers.host)) return false;
   if (req.socket?.remoteAddress && !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress)) return false;
   if (req.headers.origin && req.headers.origin !== `http://${req.headers.host}`) return false;
-  return !mutation || (req.headers.origin === `http://${req.headers.host}` && req.headers['x-dsh-token'] === token);
+  // LOCAL PATCH: under the desktop's dsh-app:// scheme Chromium sends no Origin header at
+  // all, so requiring origin === http://<host> rejected every POST (inventory load and the
+  // identity save) while every GET still worked. The per-process token stays the gate, and
+  // a cross-site POST always carries an Origin, which the non-mutation check above rejects.
+  return !mutation || (req.headers['x-dsh-token'] === token && (!req.headers.origin || req.headers.origin === `http://${req.headers.host}`));
 }
 /* LOCAL DEBUG: record what the inventory load actually produced (or why it failed). */
 function loadLog(entry) {
@@ -67,7 +71,10 @@ async function body(req) {
 }
 export async function inventory(ctx, emit, signal) {
   const started = performance.now(), skills = [], plugins = [], issues = [];
-  stepLog({ step: 'enter', cwd: process.cwd() });
+  // Hoisted: the final `complete` event reports this cwd, and it used to be declared
+  // inside the try block below, which threw a ReferenceError before the event was emitted.
+  let cwd = process.cwd();
+  stepLog({ step: 'enter', cwd });
   emit({ type: 'stage', stage: 'skills', status: 'loading' });
   let lease;
   try {
@@ -80,7 +87,6 @@ export async function inventory(ctx, emit, signal) {
     // LOCAL PATCH: the desktop app's cwd is its install directory, which carries no
     // project skills. Prefer the user's registered workspace so skill discovery matches
     // what the user actually has; fall back to the process cwd when none is registered.
-    let cwd = process.cwd();
     try {
       const spaces = await ctx.workspaceRegistry?.list?.();
       const usable = Array.isArray(spaces) ? spaces.find(space => space && typeof space.path === 'string' && space.path) : undefined;
@@ -166,7 +172,7 @@ export function apply(ctx, config = {}) {
         return json(res, 200, { mode: 'local', token, username: value.username, badge_id: value.badge_id, visual_style: value.visual_style, sound: value.sound, workspace: process.cwd(), inventory_mode: 'mounted', runtime: 'native', runtime_label: 'NATIVE' });
       }
       if (path === '/api/load' && req.method === 'POST') {
-        if (!localRequest(req, ctx.webServer.port, token, true)) return json(res, 403, { error: 'Invalid local request.' });
+        if (!localRequest(req, ctx.webServer.port, token, true)) { guardLog(req, ctx.webServer.port, token, true); return json(res, 403, { error: 'Invalid local request.' }); }
         res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store' });
         const controller = new AbortController();
         res.on('close', () => controller.abort());
