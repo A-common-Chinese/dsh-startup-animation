@@ -4,7 +4,7 @@
 
 > **本仓库是一个被裁剪过的 fork，只保留这个动画。**
 > - 上游：https://github.com/Ar1haraNaN7mI/deepseek-harness-rust-optimize
-> - 本 fork：https://github.com/A-common-Chinese/deepseek-harness-rust-optimize
+> - 本 fork：https://github.com/A-common-Chinese/dsh-startup-animation
 >
 > 上游仓库同时是一个用 Rust 重写的 DSH 风格助手（CLI / TUI / 网页 / Windows 桌面端 / 电脑操作 / 桌宠）。**本 fork 已把与本 addon 无关的内容全部删除**，只留动画本体、addon 包与安装/维护脚本。
 
@@ -67,8 +67,8 @@
 ### 方式一：装进 DSH 桌面端（推荐，默认路径）
 
 ```bash
-git clone https://github.com/A-common-Chinese/deepseek-harness-rust-optimize.git
-cd deepseek-harness-rust-optimize
+git clone https://github.com/A-common-Chinese/dsh-startup-animation.git
+cd dsh-startup-animation
 python scripts/install_startup_animation.py
 ```
 
