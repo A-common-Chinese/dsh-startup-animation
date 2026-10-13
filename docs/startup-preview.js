@@ -332,6 +332,9 @@ function phaseCopy(){
  if(sequence.phase===1)return local.connection==='local'?['本地连接已建立','LOCAL WORKSPACE CONNECTED','准备读取当前工作区的能力档案。']:['离线演出','LOCAL HOST NOT CONNECTED','未读取真实数据 · 请用 dsh startup web 启动。'];
  if(sequence.phase===3||sequence.phase===4){
   if(data.status==='complete'){
+   /* LOCAL PATCH: phase 3 keeps its own copy while the read lands; the load-result
+      headline belongs to the ready phase, so the two stages no longer look identical. */
+   if(sequence.phase===3)return normal;
    const tools=data.plugins.reduce((sum,item)=>sum+(item.tool_count||0),0);
    const toolSummary=data.plugins.every(item=>Number.isFinite(item.tool_count))?' · '+tools+' tools':'';
    return [data.issues.length?'加载完成 · 部分项目需检查':'能力档案已载入',data.issues.length?'LOAD COMPLETE / CHECK ISSUES':'LOCAL LOAD COMPLETE',data.skills.length+' skills · '+data.plugins.length+' plugins'+toolSummary];
