@@ -1,4 +1,4 @@
-# DSH 启动动画 · native-startup
+# dsh-startup-animation · DSH 启动动画（native-startup addon）
 
 给**官方 DeepSeek Harness** 的 Web 界面加一段可选开屏演出：真实读取本机的 skills 与已加载 plugins，配固定英文旁白、两套可切换的视觉风格，演完自动交回官方 Harness。
 
