@@ -17,6 +17,8 @@
 | 安装方式 | `install_dsh.py` 装 Rust 应用；`install_native_startup.py` 装 addon（**网页/CLI** 路径，需 npm） | `install_startup_animation.py` **默认装进 DSH 桌面端**（不需要 npm）；同时保留上游的网页/CLI 安装器 |
 | 卡在"展开能力档案" | 有：进入第 3 阶段后无人发起读取，必须手动点一下才继续 | **已修**：进入第 3 阶段即自动读取，并加 30 秒兜底 |
 | 演出收尾 | 同一 tick 内抽掉 iframe，官方界面瞬间出现 | **已修**：交叉淡出（影片 520 ms 淡出 + 底层由 0.55 亮度 480 ms 落定） |
+| 父级兜底定时器 | 只在收到精确的 `ready` 消息时才清除，握手略慢就把整场动画掐掉 | **已修**：任意合法消息即清，兜底 15s → **30s** |
+| 宿主重挂后的 token | 宿主每次挂载换 token；页面存活超过一次重挂后，**清单加载与保存身份全部 403**（GET 却一切正常） | **已修**：遇到 403 先重连取新 token，再重试一次 |
 | 播放中的 `Space` | 与 `Enter` 同义：推进当前阶段 | **新功能**：**320ms 内连按两次** `Space` 紧急中止（单击仍是原义）→ **2.4 秒**红黑面板（白→红渐变、进度条 1/3 处完全变红；网格漂移 / 扫描带 / 脉冲辉光 / 雷达环 + 左上角同款 logo + 原版 `phase-5` 旁白）→ 直接进入 Harness |
 | 左上角徽标 | 宿主未回报 `runtime` 时显示 `RUST`（静态预览、以及 DSH 刚启动尚未读到 profile 时都会出现） | **已修**：HTML 初始值与 JS 兜底都改为 `NATIVE`，不再闪 `RUST` |
 | 与上游同步 | — | 历史已大幅分叉，**无法 `merge` 上游**；上游更新需手工挑选 |
@@ -201,9 +203,9 @@ allowBuilds:
   protobufjs: true
 ```
 
-## 本 fork 的两处修复
+## 本 fork 相对上游的修复
 
-只改了 `native-startup` 的两处，分支 [`fix/startup-auto-inventory-smooth-handoff`](https://github.com/A-common-Chinese/deepseek-harness-rust-optimize/tree/fix/startup-auto-inventory-smooth-handoff)，可直接向上游提 PR。
+修复集中在 `native-startup` 的 **4 个提交、仅 3 个文件**，分支 `fix/startup-auto-inventory-smooth-handoff`，**已向上游提交 PR（#5）**。前两处下面详述，后两处见「与上游的区别」表末两行（父级兜底定时器、宿主重挂后的失效 token）。
 
 **1. 开屏不再卡在"展开能力档案"等待点击** —— `docs/startup-preview.js`
 
@@ -220,7 +222,9 @@ allowBuilds:
 ```bash
 git remote add upstream https://github.com/Ar1haraNaN7mI/deepseek-harness-rust-optimize.git
 git fetch upstream
-git checkout main && git merge upstream/main
+# 注意：本 fork 的 main 是裁剪树，`git merge upstream/main` 会把删掉的文件全部带回来。
+# 上游有更新时按需取文件，例如：
+git checkout upstream/main -- docs/startup-preview.html
 ```
 
 本 fork 的 `main` 是**裁剪过的树**：它删掉了上游与本 addon 无关的全部内容，所以 `merge upstream/main` 会把这些文件原样带回来。上游有更新时请**手工挑选**（或按文件覆盖），不要直接合并。
