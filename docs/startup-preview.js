@@ -401,6 +401,8 @@ function skip(){if(accessBlocked()){requireAccess();return;}generation++;startin
    to the Harness. Self-contained: the panel carries its own inline styling. */
 let emergencyActive=false;
 const EC_PANEL_MS=2400,EC_BAR_MS=2050,EC_RED_MS=Math.round(EC_BAR_MS/3),EC_VOICE_DELAY_MS=140;
+const EC_DOUBLE_MS=320;
+let ecSpaceTimer=0;
 function emergency(){
  if(embeddedEnded)return;
  if(emergencyActive){finishEmbedded('skip');return;} // second press skips the panel (not advertised on-screen)
@@ -535,7 +537,15 @@ document.addEventListener('keydown',e=>{
  if(/^[123]$/.test(e.key)){e.preventDefault();if(sequence.choose(Number(e.key)-1)){impulse=.8;refresh();announce('已切换扫描通道 '+e.key);}return;}
  if((e.key==='ArrowLeft'||e.key==='ArrowRight')&&sequence.phase<5){e.preventDefault();sequence.choose((sequence.choices[sequence.phase]+(e.key==='ArrowRight'?1:2))%3);impulse=.5;refresh();return;}
  if(e.key==='Enter'&&!e.target.closest('button')){e.preventDefault();activate();return;}
- if(e.key===' '&&!e.target.closest('button')){e.preventDefault();emergency();return;} // LOCAL PATCH: Space = emergency abort
+ if(e.key===' '&&!e.target.closest('button')){
+  e.preventDefault();
+  if(emergencyActive){finishEmbedded('skip');return;} // during the panel: skip it (not advertised)
+  /* LOCAL PATCH: one Space keeps its original meaning; two within EC_DOUBLE_MS abort the
+     show, so the emergency panel can no longer be triggered by a stray keypress. */
+  if(ecSpaceTimer){clearTimeout(ecSpaceTimer);ecSpaceTimer=0;emergency();return;}
+  ecSpaceTimer=setTimeout(()=>{ecSpaceTimer=0;activate();},EC_DOUBLE_MS);
+  return;
+ }
 });
 document.addEventListener('visibilitychange',()=>{if(document.hidden){if(sequence.playing||starting)pause('页面在后台，演出已暂停。');else cancelVoice();cancelAnimationFrame(raf);raf=0;stopAudio();}else wake();});
 function motionChange(){document.body.classList.toggle('reduced',reducedMotion.matches);if(reducedMotion.matches){clearTransition();entryAnimations.forEach(animation=>animation.cancel());entryAnimations.clear();}refresh();}reducedMotion.addEventListener('change',motionChange);

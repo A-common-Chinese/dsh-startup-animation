@@ -7,6 +7,6 @@
     const badge = document.querySelector('.brand-bottom em');
     if (badge) badge.textContent = 'NATIVE';
     const help = document.querySelector('.control-panel .help');
-    if (help) help.textContent = 'Enter / 点击 · 继续当前阶段　Space · 紧急中止（红黑确认后直接进入）　Esc · 返回官方 Harness　C · 收起设置　M · 静音。真实数据来自官方 DSH 的默认预设与当前工作区；使用 dsh-native startup next on 控制下一次开启，dsh-native startup profile 修改身份。';
+    if (help) help.textContent = 'Enter / 点击 · 继续当前阶段　Space ×2 · 紧急中止（连按两次，防误触）　Esc · 返回官方 Harness　C · 收起设置　M · 静音。真实数据来自官方 DSH 的默认预设与当前工作区；使用 dsh-native startup next on 控制下一次开启，dsh-native startup profile 修改身份。';
   });
 })();
