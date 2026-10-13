@@ -46,7 +46,7 @@ const smoothStep=value=>{const t=Math.max(0,Math.min(1,value));return t*t*(3-2*t
 const entryAnimations=new Map();
 let raf=0,lastFrame=0,generation=0,ambientTime=0,impulse=0,drag=0,manualPause=false,signature='',pointer={x:.5,y:.5},pointerDown=null,embeddedEnded=false;
 const announce=message=>{ui.status.textContent=message;};
-let profileDirty=false,draftRevision=0,localRevision=0,inventorySeen=null,profileSeen=null;
+let profileDirty=false,draftRevision=0,localRevision=0,inventorySeen=null,profileSeen=null,inventoryPainted=false;
 const local=new DSHLocal.Client({onChange:()=>{localRevision++;renderLocal();refresh();}});
 const accessBlocked=()=>local.locked||(local.connection!=='local'&&!(local.previewOnly&&!window.DSHEmbed?.embedded));
 const voice=()=>window.DSHVoice;
@@ -272,6 +272,10 @@ function renderLocal(){
  ui.profileStatus.setAttribute('data-state',local.saveMessage.startsWith('保存失败')?'error':profileDirty?'draft':'saved');
  updateIdentity();
  const inventory=local.inventory;if(inventorySeen===inventory)return;inventorySeen=inventory;
+ /* LOCAL PATCH: the list paints exactly once - for a finished catalog, from phase 3 on. */
+ const paintList=inventory.status==='complete'&&sequence.phase>=3&&!inventoryPainted;
+ if(paintList)inventoryPainted=true;
+ try{fetch('/__dsh_startup/debug?from=preview&event=render&detail='+encodeURIComponent('phase='+sequence.phase+' status='+inventory.status+' stages='+inventory.stages.skills+'/'+inventory.stages.plugins+' sk='+inventory.skills.length+' pl='+inventory.plugins.length),{cache:'no-store'});}catch(_){} // LOCAL DEBUG: trace capability-list paints
  const rows=(items,kind)=>{
   const cache=inventoryRows[kind],seen=new Set();
   const result=items.map((item,index)=>{
@@ -304,7 +308,8 @@ function renderLocal(){
   /* LOCAL PATCH: paint the list once, on the finished catalog. Streaming rows were
      rebuilt with replaceChildren() on every update, which re-inserted the nodes and
      replayed their entry animation - once while items arrived and again at completion. */
-  if(inventory.status!=='complete')continue;
+  if(!paintList)continue;
+  try{fetch('/__dsh_startup/debug?from=preview&event=paint&detail='+encodeURIComponent(kind+' phase='+sequence.phase+' rows='+items.length),{cache:'no-store'});}catch(_){} // LOCAL DEBUG: trace capability-list paints
   textMotion.remove(list);
   const itemRows=rows(items,kind);
   if(items.length){list.classList.remove('dsh-lettering');list.replaceChildren(...itemRows);}
@@ -399,7 +404,7 @@ async function start(){
  sequence.play();beginLocalLoad();narrate();barriers();lastFrame=performance.now();if(ready)scorePhase();refresh();announce('开始'+phases[sequence.phase][0]+'。播放中点按可触发扫描波。');
 }
 function pause(message='演出已暂停。点按画面继续。'){generation++;starting=false;sequence.pause();manualPause=true;clearTransition();stopAudio();cancelVoice();local.cancelLoad(false);refresh();announce(message);}
-function restart(playNow=false){generation++;starting=false;stopAudio();cancelVoice();sequence.restart();phaseAge=0;manualPause=false;ambientTime=0;impulse=.6;resetSceneMotion();ui.accessPassword.value='';local.resetVerification();local.cancelLoad();refresh();if(playNow||!sequence.interactive)start();else announce('已回到序章。点按任意位置开始。');}
+function restart(playNow=false){generation++;starting=false;stopAudio();cancelVoice();inventoryPainted=false;sequence.restart();phaseAge=0;manualPause=false;ambientTime=0;impulse=.6;resetSceneMotion();ui.accessPassword.value='';local.resetVerification();local.cancelLoad();refresh();if(playNow||!sequence.interactive)start();else announce('已回到序章。点按任意位置开始。');}
 function requireAccess(){if(sequence.phase!==2)jump(2);if(local.locked)ui.accessPassword.focus({preventScroll:true});announce(local.locked?'请先验证访问密码。':local.connection==='connecting'?'正在读取访问设置，请稍候。':'无法确认访问设置，请重新连接。');}
 function activate(){if(sequence.phase>=2&&accessBlocked()){requireAccess();return;}impulse=1;if(sequence.playing){clickSound();refresh();return;}if(sequence.completed)restart(true);else start();}
 function jump(phase){if(accessBlocked()&&phase>2)phase=2;generation++;starting=false;stopAudio();cancelVoice();sequence.jump(phase);phaseAge=0;manualPause=false;impulse=.65;local.cancelLoad();refresh();announce('已切换到'+phases[phase][0]+'。点按画面播放。');}

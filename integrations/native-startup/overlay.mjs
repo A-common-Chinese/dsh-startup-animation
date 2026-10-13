@@ -12,7 +12,9 @@
   const REVEAL_MS = 520;
   const SETTLE_MS = 480;
   const dbg = (event, detail = '') => { try { fetch('/__dsh_startup/debug?from=overlay&event=' + encodeURIComponent(event) + '&detail=' + encodeURIComponent(detail), { cache: 'no-store' }); } catch (_) {} };
-  const start = async () => {
+  let mounted = false;
+  const start = async (force = false) => {
+    if (mounted) return;
     try {
       const response = await fetch('/__dsh_startup/launch', { cache: 'no-store', headers: { 'X-DSH-Startup': 'launch' } });
       if (!response.ok) return;
@@ -21,7 +23,7 @@
       let seen = false;
       try { seen = Boolean(sessionStorage.getItem(key)); } catch { /* Storage may be disabled. */ }
       dbg('mount-check', `enabled=${enabled} seen=${seen} instance=${instance}`);
-      if (!enabled || seen) return;
+      if (!force && (!enabled || seen)) return;
       const channel = crypto.randomUUID().replaceAll('-', '');
       const frame = document.createElement('iframe');
       frame.title = 'DSH startup animation';
@@ -64,6 +66,7 @@
         const finish = () => {
           for (const [node, wasInert] of inert) node.inert = wasInert;
           dbg('finish', 'frame removed');
+          mounted = false;
           frame.remove();
           window.removeEventListener('message', close);
           window.removeEventListener('keydown', escape);
@@ -93,8 +96,17 @@
       // Fail open to the official UI if a missing asset prevents the shared
       // animation from announcing readiness. A ready sequence has no timeout.
       deadline = setTimeout(dismiss, 30000);
+      mounted = true;
       document.body.append(frame); frame.focus();
     } catch (error) { console.warn('DSH startup animation unavailable:', error.message); }
   };
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true }); else start();
+  /* LOCAL PATCH: on-demand replay. Ctrl+Alt+P (or window.__dshStartupPreview()) mounts the
+     film again with the current files, so iterating on the animation no longer needs a DSH
+     restart - although the injected overlay.js itself still needs one page load to update. */
+  const replay = () => { void start(true); };
+  globalThis.__dshStartupPreview = replay;
+  globalThis.addEventListener('keydown', event => {
+    if (event.ctrlKey && event.altKey && event.code === 'KeyP') { event.preventDefault(); replay(); }
+  }, true);
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => start(), { once: true }); else start();
 })();
