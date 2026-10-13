@@ -301,6 +301,10 @@ function renderLocal(){
   const known=inventory.status==='complete'||items.length>0||inventory.stages[kind]==='complete';
   setText(count,known?String(loaded).padStart(2,'0'):inventory.status==='loading'?'…':'—',{kind:'roll'});
   setText(status,inventory.status==='complete'?'已完成':inventory.stages[kind]==='loading'?'正在读取':inventory.stages[kind]==='complete'?'已返回':inventory.status==='loading'?'等待本地结果':'尚未读取',{kind:'roll',delay:.1});
+  /* LOCAL PATCH: paint the list once, on the finished catalog. Streaming rows were
+     rebuilt with replaceChildren() on every update, which re-inserted the nodes and
+     replayed their entry animation - once while items arrived and again at completion. */
+  if(inventory.status!=='complete')continue;
   textMotion.remove(list);
   const itemRows=rows(items,kind);
   if(items.length){list.classList.remove('dsh-lettering');list.replaceChildren(...itemRows);}
