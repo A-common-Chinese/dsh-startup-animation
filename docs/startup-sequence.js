@@ -3,7 +3,8 @@
   'use strict';
   const durations = Object.freeze([2.1, 1.8, 2.2, 3.4, 1.8, 2.5]);
   const lateranoDurations = Object.freeze([3.4, 2.6, 3.6, 4.2, 2.8, 3.8]);
-  const checkpoints = Object.freeze([0, 2, 4]);
+  /* LOCAL PATCH: fingerprint gate v2 - the ready stage (4) no longer waits for a click. */
+  const checkpoints = Object.freeze([0, 2]);
   const total = Math.round(durations.reduce((sum, n) => sum + n, 0) * 1000) / 1000;
   class Sequence {
     constructor(interactive = true) {

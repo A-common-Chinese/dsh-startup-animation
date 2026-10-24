@@ -222,7 +222,57 @@ function drawScene(){
  const renderer=laterano&&window.DSHLateranoVisuals?window.DSHLateranoVisuals:DSHVisuals;
  renderer.draw(ctx,width,height,{phase:sequence.phase,progress:sequence.progress,visualProgress:laterano?visualProgress:undefined,bookAge:laterano?bookAge:undefined,bookSource:laterano?bookSource:undefined,bookOpen:laterano?bookOpen:undefined,time:sequence.time,textAge:laterano?(inBook?bookAge:sceneAge):manualPause?sequence.elapsed:Math.max(sequence.elapsed,phaseAge),choice:sequence.choices[Math.min(4,sequence.phase)]||0,light,reducedMotion:reducedMotion.matches,pointer,ambientTime,impulse,drag,waiting:sequence.waiting,identity:ui.identityName.value.trim()||local.profile.username,inventory:local.inventory,layout:sceneLayout});
  paintedPhase=sequence.phase;paintedProgress=visualProgress;paintedAmbientTime=ambientTime;
+ drawHoverRing();
 }
+/* LOCAL PATCH: fingerprint-style gate on the first stage. Holding the pointer on the
+   emblem fills a ring from 12 o'clock downwards on both sides; completing it starts the
+   show exactly like a click. Staying idle for HOVER_IDLE_MS also starts it. */
+const HOVER_DWELL_MS=1000,HOVER_DRAIN_MS=HOVER_DWELL_MS/3,HOVER_IDLE_MS=6000;
+let hoverInside=false,hoverCharge=0,hoverFlash=0,lastInteract=performance.now();
+function hoverGateActive(){return Boolean(sequence.waiting)&&!sequence.completed&&!manualPause&&!starting;}
+function hoverZoneRadius(){return Math.min(width,height)*.425*.86;}
+function hoverInZone(){const dx=(pointer.x-.5)*width,dy=(pointer.y-.47)*height;return Math.hypot(dx,dy)<=hoverZoneRadius();}
+function updateHoverGate(delta){
+ const active=hoverGateActive(),dt=delta*1000;
+ if(active&&hoverInside&&hoverInZone())hoverCharge=Math.min(1,hoverCharge+dt/HOVER_DWELL_MS);
+ else hoverCharge=Math.max(0,hoverCharge-dt/HOVER_DRAIN_MS);
+ if(hoverFlash>0)hoverFlash=Math.max(0,hoverFlash-dt/220);
+ if(!active)return;
+ if(hoverCharge>=1){hoverCharge=0;hoverFlash=1;clickSound();activate();return;}
+ if(performance.now()-lastInteract>=HOVER_IDLE_MS){lastInteract=performance.now();hoverFlash=1;activate();}
+}
+function drawHoverRing(){
+ if(!ctx)return;
+ const active=hoverGateActive();
+ if(!active&&hoverCharge<=0&&hoverFlash<=0)return;
+ /* LOCAL PATCH: fingerprint gate v2 - the emblem is drawn with a 26/20 local-unit pointer
+    parallax, so the read ring has to follow it instead of sitting at the static centre. */
+ const unitCss=Math.min(width,height)/1000,trackX=reducedMotion.matches?0:(pointer.x-.5)*26*unitCss,trackY=reducedMotion.matches?0:(pointer.y-.5)*20*unitCss;
+ const cx=width/2+trackX,cy=height*.47+trackY,R=hoverZoneRadius();
+ const channel=Math.min(2,sequence.choices[Math.min(4,sequence.phase)]||0);
+ const accent=visualStyle==='laterano'?'#c8a24a':(light?['#c5793f','#29848e','#8a668e']:['#82bfd2','#81c1a7','#b59ad9'])[channel];
+ const span=Math.PI*hoverCharge;
+ ctx.save();ctx.lineCap='butt';
+ if(active){
+  ctx.globalAlpha=.12;ctx.strokeStyle=accent;ctx.lineWidth=2;
+  ctx.beginPath();ctx.arc(cx,cy,R,0,Math.PI*2);ctx.stroke();
+ }
+ if(span>.004){
+  ctx.globalAlpha=.92;ctx.lineWidth=2.6;ctx.strokeStyle=accent;
+  ctx.beginPath();ctx.arc(cx,cy,R,-Math.PI/2,-Math.PI/2+span,false);ctx.stroke();
+  ctx.beginPath();ctx.arc(cx,cy,R,-Math.PI/2,-Math.PI/2-span,true);ctx.stroke();
+  ctx.globalAlpha=1;ctx.fillStyle=accent;
+  for(const a of [-Math.PI/2+span,-Math.PI/2-span]){
+   ctx.beginPath();ctx.arc(cx+Math.cos(a)*R,cy+Math.sin(a)*R,2.6,0,Math.PI*2);ctx.fill();
+  }
+ }
+ if(hoverFlash>0){
+  ctx.globalAlpha=hoverFlash*.85;ctx.lineWidth=4.5;ctx.strokeStyle=accent;
+  ctx.beginPath();ctx.arc(cx,cy,R+3.5,0,Math.PI*2);ctx.stroke();
+ }
+ ctx.globalAlpha=1;ctx.restore();
+}
+
 function applyVisualStyle(value){
   const next=value==='laterano'?'laterano':'rhine';
   if(next!==visualStyle)resetSceneMotion();
@@ -369,7 +419,7 @@ function renderUI(){
   canvas.setAttribute('aria-label',p[0]+'。'+p[2]);
   ui.play.textContent=starting?'正在开始':sequence.playing?'暂停':sequence.completed?'重播':sequence.time>0&&!sequence.waiting?'继续':'开始';ui.play.disabled=starting;
   ui.play.setAttribute('aria-label',sequence.playing?'暂停演出':sequence.completed?'重新体验':'开始或继续演出');
-  ui.interactive.textContent=sequence.interactive?'三段交互':'连续播放';ui.interactive.setAttribute('aria-pressed',String(sequence.interactive));
+  ui.interactive.textContent=sequence.interactive?'两段交互':'连续播放';ui.interactive.setAttribute('aria-pressed',String(sequence.interactive));
   chapters.forEach((c,i)=>{c.classList.toggle('past',i<sequence.phase);if(i===sequence.phase)c.setAttribute('aria-current','step');else c.removeAttribute('aria-current');});
   if(titleChanged||phaseChanged){layoutDirty=true;revealTitle(phaseChanged&&sequence.phase===2);}visiblePhase=sequence.phase;
  }
@@ -391,11 +441,11 @@ function frame(now){
  impulse=Math.max(0,impulse-delta*1.5);
  const previous=sequence.phase,wasPlaying=sequence.playing;
  barriers();sequence.tick(delta*speed);beginLocalLoad();
- if(sequence.phase!==previous){phaseAge=0;stopAudio();narrate();if(sequence.playing)scorePhase();announce(sequence.waiting?phases[sequence.phase][0]+'。点按任意位置确认。':'进入'+phases[sequence.phase][0]);}
+ if(sequence.phase!==previous){phaseAge=0;stopAudio();narrate();if(sequence.playing)scorePhase();announce(sequence.waiting?phases[sequence.phase][0]+'。点按画面或悬停中心确认。':'进入'+phases[sequence.phase][0]);}
  if(wasPlaying&&!sequence.playing){if(!sequence.completed)stopAudio();if(sequence.completed)announce('深潜就绪。点按任意位置重新体验。');}
- renderUI();drawScene();
+ updateHoverGate(delta);renderUI();drawScene();
  if(sequence.completed&&finishEmbedded('complete'))return;
- if(!raf&&!document.hidden&&(!reducedMotion.matches||sequence.playing))raf=requestAnimationFrame(frame);
+ if(!raf&&!document.hidden&&(!reducedMotion.matches||sequence.playing||hoverGateActive()||hoverCharge>0||hoverFlash>0))raf=requestAnimationFrame(frame);
 }
 function wake(){if(!embeddedEnded&&!raf&&!document.hidden){lastFrame=performance.now();raf=requestAnimationFrame(frame);}}
 function refresh(){renderUI();drawScene();wake();}
@@ -415,7 +465,7 @@ async function start(){
  sequence.play();beginLocalLoad();narrate();barriers();lastFrame=performance.now();if(ready)scorePhase();refresh();announce('开始'+phases[sequence.phase][0]+'。播放中点按可触发扫描波。');
 }
 function pause(message='演出已暂停。点按画面继续。'){generation++;starting=false;sequence.pause();manualPause=true;clearTransition();stopAudio();cancelVoice();local.cancelLoad(false);refresh();announce(message);}
-function restart(playNow=false){generation++;starting=false;stopAudio();cancelVoice();inventoryPainted=false;revealSeen=false;sequence.restart();phaseAge=0;manualPause=false;ambientTime=0;impulse=.6;resetSceneMotion();ui.accessPassword.value='';local.resetVerification();local.cancelLoad();refresh();if(playNow||!sequence.interactive)start();else announce('已回到序章。点按任意位置开始。');}
+function restart(playNow=false){generation++;starting=false;stopAudio();cancelVoice();inventoryPainted=false;revealSeen=false;sequence.restart();hoverInside=false;hoverCharge=0;hoverFlash=0;lastInteract=performance.now();phaseAge=0;manualPause=false;ambientTime=0;impulse=.6;resetSceneMotion();ui.accessPassword.value='';local.resetVerification();local.cancelLoad();refresh();if(playNow||!sequence.interactive)start();else announce('已回到序章。点按任意位置开始。');}
 function requireAccess(){if(sequence.phase!==2)jump(2);if(local.locked)ui.accessPassword.focus({preventScroll:true});announce(local.locked?'请先验证访问密码。':local.connection==='connecting'?'正在读取访问设置，请稍候。':'无法确认访问设置，请重新连接。');}
 function activate(){if(sequence.phase>=2&&accessBlocked()){requireAccess();return;}impulse=1;if(sequence.playing){clickSound();refresh();return;}if(sequence.completed)restart(true);else start();}
 function jump(phase){if(accessBlocked()&&phase>2)phase=2;generation++;starting=false;stopAudio();cancelVoice();sequence.jump(phase);phaseAge=0;manualPause=false;impulse=.65;local.cancelLoad();refresh();announce('已切换到'+phases[phase][0]+'。点按画面播放。');}
@@ -540,13 +590,21 @@ stage.addEventListener('pointerdown',e=>{if(e.button!==0||pointerDown||e.target.
 stage.addEventListener('pointermove',e=>{point(e);if(pointerDown&&e.pointerId===pointerDown.id){if(Math.hypot(e.clientX-pointerDown.x,e.clientY-pointerDown.y)>6)pointerDown.moved=true;drag+=(e.clientX-pointerDown.lastX)/Math.max(1,width)*Math.PI*2;pointerDown.lastX=e.clientX;stage.classList.toggle('dragging',pointerDown.moved);}if(reducedMotion.matches)drawScene();});
 stage.addEventListener('pointerup',e=>{if(!pointerDown||e.pointerId!==pointerDown.id)return;const moved=pointerDown.moved;pointerDown=null;stage.classList.remove('dragging');if(stage.hasPointerCapture(e.pointerId))stage.releasePointerCapture(e.pointerId);if(!moved)activate();else{impulse=.45;refresh();}});
 stage.addEventListener('pointercancel',()=>{pointerDown=null;stage.classList.remove('dragging');});
+/* LOCAL PATCH: fingerprint-style gate - track the pointer on the stage and keep the
+   idle fallback honest; the charge itself is advanced by the frame loop. */
+stage.addEventListener('pointerenter',()=>{hoverInside=true;lastInteract=performance.now();wake();});
+stage.addEventListener('pointermove',()=>{hoverInside=true;lastInteract=performance.now();wake();});
+stage.addEventListener('pointerleave',()=>{hoverInside=false;});
+stage.addEventListener('pointerdown',()=>{lastInteract=performance.now();});
+document.addEventListener('keydown',()=>{lastInteract=performance.now();},true);
+
 stage.addEventListener('pointerleave',()=>{if(!pointerDown)pointer={x:.5,y:.5};});
 ui.play.addEventListener('click',()=>sequence.playing?pause():activate());
 ui.skip.addEventListener('click',skip);ui.replay.addEventListener('click',()=>restart());
 ui.sound.addEventListener('click',toggleSound);
 ui.theme.addEventListener('click',()=>{light=!light;syncTheme();clearTransition();refresh();});
 ui.settings.addEventListener('click',()=>settings(ui.controlPanel.hidden));ui.closeSettings.addEventListener('click',()=>settings(false));
-ui.interactive.addEventListener('click',()=>{sequence.interactive=!sequence.interactive;refresh();announce(sequence.interactive?'已启用三个确认节点。':'已切换为连续播放。');});
+ui.interactive.addEventListener('click',()=>{sequence.interactive=!sequence.interactive;refresh();announce(sequence.interactive?'已启用两个确认节点。':'已切换为连续播放。');});
 ui.speed.addEventListener('change',()=>{speed=Number(ui.speed.value);lastFrame=performance.now();if(sequence.playing)scorePhase();});
 ui.seek.addEventListener('input',()=>{let t=Number(ui.seek.value);if(accessBlocked()&&t>=durations[0]+durations[1]+durations[2])t=durations[0]+durations[1];generation++;starting=false;stopAudio();cancelVoice();sequence.seek(t);manualPause=true;phaseAge=sequence.elapsed;resetSceneMotion();local.cancelLoad();refresh();});
 chapters.forEach((c,i)=>c.addEventListener('click',()=>jump(i)));
