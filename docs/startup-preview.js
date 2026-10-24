@@ -64,7 +64,8 @@ function beginLocalLoad(){if(!accessBlocked()&&sequence.phase===3&&sequence.play
       and plugins list flashed by. Keep the panel readable for PANEL_MIN_MS, and keep
       the 30 s stall escape so a dead stream still cannot require a click. */
 let localLoadWaiting=0,localLoadDoneAt=0;
-const LOCAL_PANEL_MIN_MS=3200,LOCAL_LOAD_STALL_MS=30000;
+/* LOCAL PATCH: fingerprint gate v3 - 0.2 s longer where the ready-stage click used to be. */
+const LOCAL_PANEL_MIN_MS=3400,LOCAL_LOAD_STALL_MS=30000;
 function barriers(){
   if(sequence.phase<3){localLoadWaiting=0;localLoadDoneAt=0;}
   if(sequence.phase===3){beginLocalLoad();if(!localLoadWaiting&&!loadFinished())localLoadWaiting=performance.now();}
@@ -239,7 +240,7 @@ function updateHoverGate(delta){
  if(hoverFlash>0)hoverFlash=Math.max(0,hoverFlash-dt/220);
  if(!active)return;
  if(hoverCharge>=1){hoverCharge=0;hoverFlash=1;clickSound();activate();return;}
- if(performance.now()-lastInteract>=HOVER_IDLE_MS){lastInteract=performance.now();hoverFlash=1;activate();}
+ if(sequence.phase===0&&performance.now()-lastInteract>=HOVER_IDLE_MS){lastInteract=performance.now();hoverFlash=1;activate();}
 }
 function drawHoverRing(){
  if(!ctx)return;
@@ -253,10 +254,6 @@ function drawHoverRing(){
  const accent=visualStyle==='laterano'?'#c8a24a':(light?['#c5793f','#29848e','#8a668e']:['#82bfd2','#81c1a7','#b59ad9'])[channel];
  const span=Math.PI*hoverCharge;
  ctx.save();ctx.lineCap='butt';
- if(active){
-  ctx.globalAlpha=.12;ctx.strokeStyle=accent;ctx.lineWidth=2;
-  ctx.beginPath();ctx.arc(cx,cy,R,0,Math.PI*2);ctx.stroke();
- }
  if(span>.004){
   ctx.globalAlpha=.92;ctx.lineWidth=2.6;ctx.strokeStyle=accent;
   ctx.beginPath();ctx.arc(cx,cy,R,-Math.PI/2,-Math.PI/2+span,false);ctx.stroke();
