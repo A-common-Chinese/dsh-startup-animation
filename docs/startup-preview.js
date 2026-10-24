@@ -64,8 +64,8 @@ function beginLocalLoad(){if(!accessBlocked()&&sequence.phase===3&&sequence.play
       and plugins list flashed by. Keep the panel readable for PANEL_MIN_MS, and keep
       the 30 s stall escape so a dead stream still cannot require a click. */
 let localLoadWaiting=0,localLoadDoneAt=0;
-/* LOCAL PATCH: fingerprint gate v3 - 0.2 s longer where the ready-stage click used to be. */
-const LOCAL_PANEL_MIN_MS=3400,LOCAL_LOAD_STALL_MS=30000;
+/* LOCAL PATCH: fingerprint gate v4 - the extra 0.2 s lives at the ready phase's end, not here. */
+const LOCAL_PANEL_MIN_MS=3200,LOCAL_LOAD_STALL_MS=30000;
 function barriers(){
   if(sequence.phase<3){localLoadWaiting=0;localLoadDoneAt=0;}
   if(sequence.phase===3){beginLocalLoad();if(!localLoadWaiting&&!loadFinished())localLoadWaiting=performance.now();}
