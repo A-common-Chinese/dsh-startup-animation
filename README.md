@@ -60,9 +60,25 @@
 | 场景 | 要求 |
 |---|---|
 | **桌面端（推荐路径）** | 官方 DSH 桌面版 + **Python 3**；**不需要** npm、Node 工具链或全局安装 |
-| 官方 DSH 版本 | 在 `@deepseek-ai/dsh@0.2.0-rc.2` 上验证；大版本升级若接口变动需重新适配 |
-| 网页 / CLI 路径（可选） | Node.js `^22.19.0 \|\| >=24.0.0` + `npm`（走上游安装器） |
+| 官方 DSH 版本 | **已实测通过 `0.2.2-rc.3`**（桌面端同为 `0.2.2-rc.3`，2026-11-13 更新）；适配基线为 `0.2.0-rc.2` |
+| 网页 / CLI 路径（可选） | Node.js **`>=24.9.0`**（新版本 DSH 的硬性要求）+ `npm`（走上游安装器） |
 | Rust / Cargo | **不需要** —— 本 addon 与上游的 Rust 部分完全解耦 |
+
+### 兼容性与升级检查
+
+本 addon 只用宿主的这几处接口：`webServer.register` / `webServer.port`、`connection.requestRejection`、`skills.snapshot`、`agentPresets.acquireScope` / `compositionInventory`、`loader.entries`、`workspaceRegistry.list`，外加 `webserver/index-inject` 事件与 profile 的 `cordis.patch.yml` 插入语法。
+
+**`0.2.2-rc.3` 实测结果**（升级后仍在跑）：`/__dsh_startup/overlay.js` 200 · 预览页 200 · `/api/*` 未带凭据返回 401（守卫正常）· 清单 15 ms 读完 `skills 41 / plugins 212 / issues 0` · 覆盖层完成一次完整的 `ready → skip → dismiss → finish`。
+
+**升级指南中唯一相关的一条**：`v0.2.1-rc.2 / webserver-index-peer` —— `renderIndex(html, peer)` / `collectIndexInjections(peer)` 现在需要 Peer，`webserver/index-inject` 会把 Peer 作为第二个参数传给监听方。原文明确：**只读 table 的监听方不受影响**；本插件的监听只向 table 推一行 `script-src`，因此无需迁移。
+
+**下次 DSH 升级时按这个清单核一遍**：
+
+1. 启动后看 `~/.dsh/startup-animation/plugin/load.log` 是否有新的 `ok:true`（有 → `skills` / `loader` / `agentPresets` 三件都通）
+2. 看 `request.log`：页面请求应为 `cookie:true, rejection:null`；无凭据的 curl 应为 `rejection:401`
+3. 按 `Ctrl+Alt+P` 能否重播（覆盖层注入是否还在）
+4. 查升级指南索引 `docs/upgrade-guide/README.md`，只挑涉及上面那几处接口的条目
+5. 若注入事件签名再变，改 `plugin.mjs` 末尾的 `ctx.on('webserver/index-inject', …)` 即可，其余逻辑与版本无关
 
 ## 安装
 
