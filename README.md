@@ -293,6 +293,15 @@ git checkout upstream/main -- docs/startup-preview.html
 | `scripts/patch_startup_*.py` | 本 fork 的补丁脚本（清单自动加载 / 收尾交叉淡出 / 面板停留 / token 自愈 / 紧急面板），全部幂等、可从历史版本重放 |
 | `scripts/preview_startup_animation.py` | 网页预览服务器：把 addon 置于自带静态预览模式，回环只读，无需 DSH 即可在浏览器里看动画 |
 
+## 版本历史
+
+| 版本 | 内容 |
+|---|---|
+| **v0.4.3** | **DSH `0.2.2-rc.3` 兼容性验证**：六个宿主接口逐一实测通过（清单 `41 skills / 212 plugins / issues 0`，15 ms），升级指南中唯一相关的 `v0.2.1-rc.2 / webserver-index-peer` 对"只读 table"的监听方无影响 → **代码零改动**；`package.json` 元数据刷新（Node `>=24.9.0`、DSH 依赖改为范围），README 新增「兼容性与升级检查」 |
+| **v0.4.2** | 指纹式读条开场（悬停 ~1 秒、左右对开、正下方汇合）· 确认节点 **3 → 2**（就绪阶段不再等点击）· 序章 6 秒兜底 · 就绪阶段多停 0.2 秒 · 进度环跟随指针视差 · 去掉常显底轨 |
+| **v0.4.1** | 免 Python 的 PowerShell 安装器 + 可转发安装包（双击 `安装.cmd`）+ 一键打包脚本 |
+| **v0.4.0** | 首个 fork 版本：只保留开屏动画本体；连按两次 `Space` 紧急中止面板、`Ctrl+Alt+P` 重播、真实读取本机 skills / plugins、桌面端免 npm 安装 |
+
 ## 许可与素材来源
 
 - **代码**（`integrations/native-startup/**`、`docs/startup-*.{js,html,css}`、`scripts/` 下的维护脚本）：**MIT**（`integrations/native-startup/LICENSE`）
